@@ -6,21 +6,20 @@ datasource db {
   provider = "postgresql"
 }
 
-enum UserRole {
-  ADMIN
-  SUPERVISOR
-  OPERATOR
-  DRIVER
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         UserRole  @default(OPERATIONS_PLANNER)
+  status       String    @default("ACTIVE")
+  lastActiveAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 }
 
-model User {
-  id           String   @id @default(cuid())
-  name         String
-  email        String   @unique
-  passwordHash String
-  role         UserRole @default(SUPERVISOR)
-  status       String   @default("ACTIVE")
-  lastActiveAt DateTime?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+enum UserRole {
+  ADMINISTRATOR
+  OPERATIONS_PLANNER
+  TRUCK_DRIVER
 }

@@ -1,3 +1,5 @@
+export const runtime = "nodejs";
+
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
@@ -13,15 +15,14 @@ function isAuthorized(req: NextRequest) {
 }
 
 function parseRole(input: unknown): UserRole {
-  if (typeof input !== "string") return UserRole.SUPERVISOR;
+  if (typeof input !== "string") return UserRole.OPERATIONS_PLANNER;
 
   const normalized = input.trim().toUpperCase();
   return (Object.values(UserRole) as string[]).includes(normalized)
     ? (normalized as UserRole)
-    : UserRole.SUPERVISOR;
+    : UserRole.OPERATIONS_PLANNER;
 }
 
-// GET /api/admin/users  -> list users (no passwords returned)
 export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -44,14 +45,15 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({ users });
 }
 
-// POST /api/admin/users -> create user (hash password)
 export async function POST(req: NextRequest) {
   if (!isAuthorized(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const body = await req.json().catch(() => null);
-  if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  if (!body) {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
 
   const { name, email, password, role } = body as {
     name?: unknown;
@@ -60,7 +62,11 @@ export async function POST(req: NextRequest) {
     role?: unknown;
   };
 
-  if (typeof name !== "string" || typeof email !== "string" || typeof password !== "string") {
+  if (
+    typeof name !== "string" ||
+    typeof email !== "string" ||
+    typeof password !== "string"
+  ) {
     return NextResponse.json(
       { error: "name, email, password are required (strings)" },
       { status: 400 }
@@ -75,6 +81,7 @@ export async function POST(req: NextRequest) {
   const existing = await prisma.user.findUnique({
     where: { email: normalizedEmail },
   });
+
   if (existing) {
     return NextResponse.json({ error: "Email already exists" }, { status: 409 });
   }

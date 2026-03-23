@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import AdminSidebar from "@/components/admin/AdminSidebar";
 
-type UserRole = "ADMIN" | "SUPERVISOR" | "OPERATOR" | "DRIVER";
+type UserRole = "ADMINISTRATOR" | "OPERATIONS_PLANNER" | "TRUCK_DRIVER";
 type UserStatus = "ACTIVE" | "INACTIVE" | "PENDING";
 
 type UserRow = {
@@ -29,7 +30,7 @@ export default function AdminPage() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<UserRole>("SUPERVISOR");
+  const [role, setRole] = useState<UserRole>("OPERATIONS_PLANNER");
   const [password, setPassword] = useState("");
   const [creating, setCreating] = useState(false);
 
@@ -115,7 +116,7 @@ export default function AdminPage() {
       setName("");
       setEmail("");
       setPassword("");
-      setRole("SUPERVISOR");
+      setRole("OPERATIONS_PLANNER");
       await fetchUsers();
     } catch (e: any) {
       setError(e.message || "Error");
@@ -151,11 +152,14 @@ export default function AdminPage() {
 
   async function onChangeRole(u: UserRow) {
     setOpenMenuFor(null);
-    const next = prompt("Enter role: ADMIN / SUPERVISOR / OPERATOR / DRIVER", String(u.role));
+    const next = prompt(
+  "Enter role: ADMINISTRATOR / OPERATIONS_PLANNER / TRUCK_DRIVER",
+  String(u.role)
+);
     if (!next) return;
 
     const roleUpper = next.trim().toUpperCase();
-    if (!["ADMIN", "SUPERVISOR", "OPERATOR", "DRIVER"].includes(roleUpper)) {
+    if (!["ADMINISTRATOR", "OPERATIONS_PLANNER", "TRUCK_DRIVER"].includes(roleUpper)) {
       alert("Invalid role.");
       return;
     }
@@ -238,21 +242,7 @@ export default function AdminPage() {
       <div className="mx-auto max-w-[1400px] px-6 py-6">
         <div className="grid grid-cols-12 gap-6">
           {/* Left sidebar */}
-          <aside className="col-span-12 lg:col-span-2">
-            <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-              <div className="text-sm font-semibold mb-3 text-gray-900">
-                Admin Controls
-              </div>
-
-              <div className="space-y-2 text-sm">
-                <SidebarItem active label="User Management" />
-                <SidebarItem label="Roles & Permissions" />
-                <SidebarItem label="Trucks Database" />
-                <SidebarItem label="Bins Database" />
-                <SidebarItem label="Sensor Health Monitor" />
-              </div>
-            </div>
-          </aside>
+          <AdminSidebar />
 
           {/* Main */}
           <section className="col-span-12 lg:col-span-8">
@@ -285,17 +275,16 @@ export default function AdminPage() {
                     />
                   </div>
 
-                  <select
+                    <select
                     value={roleFilter}
-                    onChange={(e) => setRoleFilter(e.target.value as any)}
+                    onChange={(e) => setRoleFilter(e.target.value as "ALL" | UserRole)}
                     className="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-emerald-200"
-                  >
+                    >
                     <option value="ALL">All Roles</option>
-                    <option value="ADMIN">Admin</option>
-                    <option value="SUPERVISOR">Supervisor</option>
-                    <option value="OPERATOR">Operator</option>
-                    <option value="DRIVER">Driver</option>
-                  </select>
+                    <option value="ADMINISTRATOR">Administrator</option>
+                    <option value="OPERATIONS_PLANNER">Operations Planner</option>
+                    <option value="TRUCK_DRIVER">Truck Driver</option>
+                    </select>
                 </div>
 
                 <button
@@ -352,7 +341,7 @@ export default function AdminPage() {
                             <td className="px-4 py-3 text-gray-900">{u.email}</td>
                             <td className="px-4 py-3">
                               <span className="rounded-full bg-gray-100 px-2 py-1 text-xs font-medium text-gray-800">
-                                {String(u.role)}
+                                {formatRole(String(u.role))}
                               </span>
                             </td>
                             <td className="px-4 py-3">
@@ -465,10 +454,9 @@ export default function AdminPage() {
                   onChange={(e) => setRole(e.target.value as UserRole)}
                   className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-emerald-200"
                 >
-                  <option value="ADMIN">Admin</option>
-                  <option value="SUPERVISOR">Supervisor</option>
-                  <option value="OPERATOR">Operator</option>
-                  <option value="DRIVER">Driver</option>
+                  <option value="ADMINISTRATOR">Administrator</option>
+                  <option value="OPERATIONS_PLANNER">Operations Planner</option>
+                  <option value="TRUCK_DRIVER">Truck Driver</option>
                 </select>
               </Field>
 
@@ -509,19 +497,20 @@ export default function AdminPage() {
   );
 }
 
-function SidebarItem({ label, active }: { label: string; active?: boolean }) {
-  return (
-    <div
-      className={
-        "flex items-center gap-2 rounded-lg px-3 py-2 " +
-        (active ? "bg-emerald-50 text-emerald-800" : "text-gray-900 hover:bg-gray-50")
-      }
-    >
-      <span className="h-2 w-2 rounded-full bg-gray-300" />
-      <span className="font-medium">{label}</span>
-    </div>
-  );
+function formatRole(role: string) {
+  switch (role) {
+    case "ADMINISTRATOR":
+      return "Administrator";
+    case "OPERATIONS_PLANNER":
+      return "Operations Planner";
+    case "TRUCK_DRIVER":
+      return "Truck Driver";
+    default:
+      return role;
+  }
 }
+
+
 
 function StatusPill({ status }: { status: string }) {
   const s = status.toUpperCase();

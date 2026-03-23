@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
+import { UserRole } from "@prisma/client";
 
 function isAuthorized(req: NextRequest) {
   const secret = req.headers.get("x-admin-secret");
   return secret && process.env.ADMIN_SECRET && secret === process.env.ADMIN_SECRET;
 }
 
-// PATCH /api/admin/users/:id
-// body can include: name, email, role, status, password
+const ALLOWED_ROLES = new Set(Object.values(UserRole));
+const ALLOWED_STATUS = new Set(["ACTIVE", "INACTIVE", "PENDING"]);
+
 export async function PATCH(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
@@ -33,12 +35,23 @@ export async function PATCH(
   const data: any = {};
 
   if (name !== undefined) data.name = String(name).trim();
-
   if (email !== undefined) data.email = String(email).trim().toLowerCase();
 
-  if (role !== undefined) data.role = String(role);
+  if (role !== undefined) {
+    const normalizedRole = String(role).trim().toUpperCase();
+    if (!ALLOWED_ROLES.has(normalizedRole as UserRole)) {
+      return NextResponse.json({ error: "Invalid role" }, { status: 400 });
+    }
+    data.role = normalizedRole as UserRole;
+  }
 
-  if (status !== undefined) data.status = String(status);
+  if (status !== undefined) {
+    const normalizedStatus = String(status).trim().toUpperCase();
+    if (!ALLOWED_STATUS.has(normalizedStatus)) {
+      return NextResponse.json({ error: "Invalid status" }, { status: 400 });
+    }
+    data.status = normalizedStatus;
+  }
 
   if (password !== undefined) {
     const pw = String(password);
@@ -69,12 +82,10 @@ export async function PATCH(
 
     return NextResponse.json({ user: updated });
   } catch (e: any) {
-    // unique email violation etc.
     return NextResponse.json({ error: e?.message || "Update failed" }, { status: 400 });
   }
 }
 
-// DELETE /api/admin/users/:id
 export async function DELETE(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
