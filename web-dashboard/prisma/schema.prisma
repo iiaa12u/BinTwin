@@ -23,3 +23,11 @@ enum UserRole {
   OPERATIONS_PLANNER
   TRUCK_DRIVER
 }
+
+model PasswordResetRequest {
+  id          String   @id @default(cuid())
+  email       String
+  status      String   @default("PENDING") // PENDING | RESOLVED
+  requestedAt DateTime @default(now())
+  resolvedAt DateTime?
+}

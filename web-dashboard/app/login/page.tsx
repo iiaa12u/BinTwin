@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 
 export default function LoginPage() {
@@ -8,13 +8,14 @@ export default function LoginPage() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  async function handleLogin(e: React.FormEvent) {
+  async function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    setError("");
     setLoading(true);
+    setError("");
 
     try {
       const res = await fetch("/api/auth/login", {
@@ -25,87 +26,136 @@ export default function LoginPage() {
         body: JSON.stringify({ email, password }),
       });
 
-      const data = await res.json();
+      const raw = await res.text();
+      const data = raw ? JSON.parse(raw) : null;
 
       if (!res.ok) {
-        throw new Error(data?.error || "Login failed");
+        throw new Error(data?.error || "Invalid email or password");
       }
 
-      const role = String(data.role);
+      const role = data?.user?.role;
 
       if (role === "ADMINISTRATOR") {
-        router.push("/admin");
+        router.replace("/admin");
       } else if (role === "OPERATIONS_PLANNER") {
-        router.push("/dashboard");
+        router.replace("/dashboard");
       } else if (role === "TRUCK_DRIVER") {
-        router.push("/driver");
+        router.replace("/driver");
       } else {
-        router.push("/dashboard");
+        router.replace("/");
       }
-    } catch (e: any) {
-      setError(e.message || "Login failed");
+    } catch (err: any) {
+      setError(err.message || "Something went wrong");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
-      <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
-        <div className="flex justify-center mb-4">
-          <img
-            src="/bintwin-logo.png"
-            alt="BinTwin logo"
-            className="h-16 w-auto"
-          />
+    <div className="relative min-h-screen overflow-hidden">
+      <div
+        className="absolute inset-0 bg-cover bg-center"
+        style={{ backgroundImage: "url('/login-bg.png')" }}
+      />
+
+      <div className="absolute inset-0 bg-slate-950/55" />
+
+      <div className="relative z-10 flex min-h-screen flex-col">
+        <div className="flex flex-1 items-center justify-center px-4">
+          <div className="w-full max-w-md rounded-2xl border border-emerald-400/30 bg-slate-950/60 p-8 shadow-2xl backdrop-blur-md">
+            <div className="mb-6 text-center">
+              <div className="mb-6 flex justify-center">
+                <img
+                  src="/bintwin-logo.png"
+                  alt="BinTwin logo"
+                  className="h-20 w-auto drop-shadow-[0_0_12px_rgba(16,185,129,0.35)]"
+                />
+              </div>
+
+              <p className="text-sm text-gray-300">
+                Digital Twin Intelligence for Smart Waste Operations.
+              </p>
+
+              <h1 className="mt-5 text-3xl font-bold text-white">
+                Sign In to BinTwin
+              </h1>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-200">
+                  User ID
+                </label>
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="Enter your User ID"
+                  className="w-full rounded-lg border border-emerald-400/20 bg-slate-900/70 px-4 py-3 text-white placeholder:text-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/20"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-sm font-medium text-gray-200">
+                  Password
+                </label>
+
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Enter your password"
+                    className="w-full rounded-lg border border-emerald-400/20 bg-slate-900/70 px-4 py-3 pr-12 text-white placeholder:text-gray-400 outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/20"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-sm text-gray-300 hover:text-white"
+                  >
+                    {showPassword ? "Hide" : "Show"}
+                  </button>
+                </div>
+              </div>
+
+              {error && (
+                <div className="rounded-lg border border-red-400/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                  {error}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={loading || !email || !password}
+                className="flex w-full items-center justify-center rounded-lg bg-emerald-500 px-4 py-3 text-sm font-semibold text-white transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loading ? (
+                  <span className="flex items-center gap-2">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    Signing In...
+                  </span>
+                ) : (
+                  "Sign In"
+                )}
+              </button>
+
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={() => router.push("/forgot-password")}
+                  className="text-sm text-gray-300 hover:text-white"
+                >
+                  Forgot Password?
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
 
-        <h1 className="text-2xl font-bold text-center text-black">Login</h1>
-        <p className="mt-2 text-sm text-center text-gray-600">
-          Sign in to access the BinTwin platform
-        </p>
-
-        <form onSubmit={handleLogin} className="mt-6 space-y-4">
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-800">
-              Email
-            </label>
-            <input
-              type="email"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-black outline-none focus:ring-2 focus:ring-emerald-200"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Enter your email"
-            />
-          </div>
-
-          <div>
-            <label className="mb-1 block text-sm font-medium text-gray-800">
-              Password
-            </label>
-            <input
-              type="password"
-              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-black outline-none focus:ring-2 focus:ring-emerald-200"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter your password"
-            />
-          </div>
-
-          {error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-              {error}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-lg bg-emerald-600 py-2.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-          >
-            {loading ? "Signing in..." : "Login"}
-          </button>
-        </form>
+        <footer className="relative z-10 border-t border-white/10 bg-slate-950/70 px-6 py-4 text-sm text-gray-300">
+          © 2025 BinTwin Digital Twin Platform — Smart Waste Innovation
+        </footer>
       </div>
     </div>
   );

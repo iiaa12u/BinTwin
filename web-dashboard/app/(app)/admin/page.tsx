@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import AdminSidebar from "@/components/admin/AdminSidebar";
+import ResetRequestsPanel from "@/components/admin/ResetRequestsPanel";
 
 type UserRole = "ADMINISTRATOR" | "OPERATIONS_PLANNER" | "TRUCK_DRIVER";
 type UserStatus = "ACTIVE" | "INACTIVE" | "PENDING";
@@ -395,7 +396,7 @@ export default function AdminPage() {
             </div>
           </section>
 
-          {/* Right quick actions */}
+          {/* Right sidebar */}
           <aside className="col-span-12 lg:col-span-2">
             <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
               <div className="text-sm font-semibold mb-3 text-gray-900">
@@ -411,6 +412,8 @@ export default function AdminPage() {
                 </button>
               </div>
             </div>
+
+            <ResetRequestsPanel />
           </aside>
         </div>
       </div>
