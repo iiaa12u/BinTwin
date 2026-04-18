@@ -1,17 +1,78 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { bins } from "@/lib/bins";
 
+export type PlannedStop = {
+  binId: string;
+  lat: number;
+  lng: number;
+  priority: number;
+  eta: string;
+  fillPct: number;
+  risk: "Low" | "Medium" | "High";
+};
+
 export default function DashboardMap({
   onBinSelect,
+  plannedStops = [],
+  showRoute = false,
 }: {
   onBinSelect?: (binId: string) => void;
+  plannedStops?: PlannedStop[];
+  showRoute?: boolean;
 }) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
+
+  const routeGeoJSON = useMemo(() => {
+    if (!showRoute || plannedStops.length === 0) return null;
+
+    const depot: [number, number] = [50.1905, 26.3898];
+
+    const coordinates: [number, number][] = [
+      depot,
+      ...plannedStops.map((stop) => [stop.lng, stop.lat] as [number, number]),
+    ];
+
+    return {
+      type: "FeatureCollection" as const,
+      features: [
+        {
+          type: "Feature" as const,
+          geometry: {
+            type: "LineString" as const,
+            coordinates,
+          },
+          properties: {},
+        },
+      ],
+    };
+  }, [plannedStops, showRoute]);
+
+  const stopGeoJSON = useMemo(() => {
+    if (!plannedStops.length) return null;
+
+    return {
+      type: "FeatureCollection" as const,
+      features: plannedStops.map((stop) => ({
+        type: "Feature" as const,
+        geometry: {
+          type: "Point" as const,
+          coordinates: [stop.lng, stop.lat],
+        },
+        properties: {
+          binId: stop.binId,
+          priority: stop.priority,
+          eta: stop.eta,
+          fillPct: stop.fillPct,
+          risk: stop.risk,
+        },
+      })),
+    };
+  }, [plannedStops]);
 
   useEffect(() => {
     if (mapRef.current) return;
@@ -21,7 +82,7 @@ export default function DashboardMap({
     const map = new mapboxgl.Map({
       container: mapContainer.current as HTMLDivElement,
       style: "mapbox://styles/mapbox/light-v11",
-      center: [50.1905, 26.3898], // lng, lat
+      center: [50.1905, 26.3898],
       zoom: 14,
     });
 
@@ -29,7 +90,6 @@ export default function DashboardMap({
     mapRef.current = map;
 
     map.on("load", () => {
-      // Convert bins to GeoJSON (include id)
       const geojson: GeoJSON.FeatureCollection<GeoJSON.Point> = {
         type: "FeatureCollection",
         features: bins.map((b) => ({
@@ -88,10 +148,10 @@ export default function DashboardMap({
               "#9ca3af",
             ],
           ],
+          "circle-opacity": 0.65,
         },
       });
 
-      // Hover cursor
       map.on("mouseenter", "bins-circles", () => {
         map.getCanvas().style.cursor = "pointer";
       });
@@ -100,7 +160,6 @@ export default function DashboardMap({
         map.getCanvas().style.cursor = "";
       });
 
-      // Click handler
       map.on("click", "bins-circles", (e) => {
         const feature = e.features?.[0];
         if (!feature) return;
@@ -108,7 +167,6 @@ export default function DashboardMap({
         const coords = (feature.geometry as any).coordinates.slice();
         const props = feature.properties as any;
 
-        // 🔥 Trigger drawer open
         if (onBinSelect && props?.id) {
           onBinSelect(props.id);
         }
@@ -129,6 +187,105 @@ export default function DashboardMap({
           .setHTML(html)
           .addTo(map);
       });
+
+      map.addSource("route-line", {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: [],
+        },
+      });
+
+      map.addLayer({
+        id: "route-line-layer",
+        type: "line",
+        source: "route-line",
+        layout: {
+          "line-join": "round",
+          "line-cap": "round",
+        },
+        paint: {
+          "line-color": "#111827",
+          "line-width": 4,
+          "line-opacity": 0.85,
+        },
+      });
+
+      map.addSource("route-stops", {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: [],
+        },
+      });
+
+      map.addLayer({
+        id: "route-stops-layer",
+        type: "circle",
+        source: "route-stops",
+        paint: {
+          "circle-radius": 14,
+          "circle-stroke-width": 3,
+          "circle-stroke-color": "#ffffff",
+          "circle-color": [
+            "match",
+            ["get", "risk"],
+            "High",
+            "#ef4444",
+            "Medium",
+            "#f59e0b",
+            "Low",
+            "#10b981",
+            "#6b7280",
+          ],
+        },
+      });
+
+      map.addLayer({
+        id: "route-stops-labels",
+        type: "symbol",
+        source: "route-stops",
+        layout: {
+          "text-field": ["to-string", ["get", "priority"]],
+          "text-size": 12,
+        },
+        paint: {
+          "text-color": "#ffffff",
+        },
+      });
+
+      map.on("click", "route-stops-layer", (e) => {
+        const feature = e.features?.[0];
+        if (!feature) return;
+
+        const coords = (feature.geometry as any).coordinates.slice();
+        const props = feature.properties as any;
+
+        const html = `
+          <div style="font-family: ui-sans-serif; font-size: 12px;">
+            <div style="font-weight: 700; margin-bottom: 6px;">
+              ${props.binId}
+            </div>
+            <div><b>Order:</b> ${props.priority}</div>
+            <div><b>ETA:</b> ${props.eta}</div>
+            <div><b>Fill:</b> ${props.fillPct}%</div>
+            <div><b>Risk:</b> ${props.risk}</div>
+          </div>
+        `;
+
+        new mapboxgl.Popup({ offset: 12 })
+          .setLngLat(coords)
+          .setHTML(html)
+          .addTo(map);
+      });
+
+      map.on("mouseenter", "route-stops-layer", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+
+      map.on("mouseleave", "route-stops-layer", () => {
+        map.getCanvas().style.cursor = "";
+      });
     });
 
     return () => {
@@ -137,11 +294,46 @@ export default function DashboardMap({
     };
   }, [onBinSelect]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+
+    const lineSource = map.getSource("route-line") as mapboxgl.GeoJSONSource | undefined;
+    if (lineSource) {
+      lineSource.setData(
+        routeGeoJSON ?? {
+          type: "FeatureCollection",
+          features: [],
+        }
+      );
+    }
+
+    const stopSource = map.getSource("route-stops") as mapboxgl.GeoJSONSource | undefined;
+    if (stopSource) {
+      stopSource.setData(
+        stopGeoJSON ?? {
+          type: "FeatureCollection",
+          features: [],
+        }
+      );
+    }
+
+    if (plannedStops.length > 0) {
+      const bounds = new mapboxgl.LngLatBounds();
+      bounds.extend([50.1905, 26.3898]);
+      plannedStops.forEach((stop) => bounds.extend([stop.lng, stop.lat]));
+
+      map.fitBounds(bounds, {
+        padding: 60,
+        duration: 700,
+      });
+    }
+  }, [routeGeoJSON, stopGeoJSON, plannedStops]);
+
   return (
-    <div className="relative w-full h-[500px] rounded-xl overflow-hidden border bg-white">
+    <div className="relative w-full h-[520px] rounded-xl overflow-hidden border bg-white">
       <div ref={mapContainer} className="w-full h-full" />
 
-      {/* Legend */}
       <div className="absolute left-4 top-4 rounded-lg border bg-white/95 p-3 text-xs shadow">
         <div className="font-semibold mb-2">Legend</div>
 
@@ -155,14 +347,17 @@ export default function DashboardMap({
           <span>East campus</span>
         </div>
 
-        <div className="flex items-center gap-2 mb-2">
+        <div className="flex items-center gap-2 mb-1">
           <span className="inline-block h-3 w-3 rounded-full bg-blue-500 border border-white" />
           <span>West campus</span>
         </div>
 
-        <div className="text-[11px] text-gray-600">
-          Circle size = fill/volume %
+        <div className="flex items-center gap-2 mb-2">
+          <span className="inline-block h-1 w-6 bg-slate-900" />
+          <span>Optimized route</span>
         </div>
+
+        <div className="text-[11px] text-gray-600">Route markers show visit order</div>
       </div>
     </div>
   );
