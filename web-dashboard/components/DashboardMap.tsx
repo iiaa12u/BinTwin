@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import mapboxgl from "mapbox-gl";
 import "mapbox-gl/dist/mapbox-gl.css";
-import { bins } from "@/lib/bins";
+import { bins as defaultBins, type BinPoint } from "@/lib/bins";
 
 export type PlannedStop = {
   binId: string;
@@ -15,17 +15,23 @@ export type PlannedStop = {
   risk: "Low" | "Medium" | "High";
 };
 
-export default function DashboardMap({
-  onBinSelect,
-  plannedStops = [],
-  showRoute = false,
-}: {
+type DashboardMapProps = {
+  bins?: BinPoint[];
   onBinSelect?: (binId: string) => void;
   plannedStops?: PlannedStop[];
   showRoute?: boolean;
-}) {
+};
+
+export default function DashboardMap({
+  bins,
+  onBinSelect,
+  plannedStops = [],
+  showRoute = false,
+}: DashboardMapProps) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
+
+  const mapBins = bins ?? defaultBins;
 
   const routeGeoJSON = useMemo(() => {
     if (!showRoute || plannedStops.length === 0) return null;
@@ -74,6 +80,28 @@ export default function DashboardMap({
     };
   }, [plannedStops]);
 
+  const binsGeoJSON = useMemo<GeoJSON.FeatureCollection<GeoJSON.Point>>(
+    () => ({
+      type: "FeatureCollection",
+      features: mapBins.map((b) => ({
+        type: "Feature",
+        geometry: {
+          type: "Point",
+          coordinates: [b.lng, b.lat],
+        },
+        properties: {
+          id: b.id,
+          placeName: b.placeName,
+          side: b.side,
+          buildingNumber: b.buildingNumber,
+          binNumber: b.binNumber,
+          fillPct: b.fillPct,
+        },
+      })),
+    }),
+    [mapBins]
+  );
+
   useEffect(() => {
     if (mapRef.current) return;
 
@@ -90,28 +118,9 @@ export default function DashboardMap({
     mapRef.current = map;
 
     map.on("load", () => {
-      const geojson: GeoJSON.FeatureCollection<GeoJSON.Point> = {
-        type: "FeatureCollection",
-        features: bins.map((b) => ({
-          type: "Feature",
-          geometry: {
-            type: "Point",
-            coordinates: [b.lng, b.lat],
-          },
-          properties: {
-            id: b.id,
-            placeName: b.placeName,
-            side: b.side,
-            buildingNumber: b.buildingNumber,
-            binNumber: b.binNumber,
-            fillPct: b.fillPct,
-          },
-        })),
-      };
-
       map.addSource("bins", {
         type: "geojson",
-        data: geojson,
+        data: binsGeoJSON,
       });
 
       map.addLayer({
@@ -292,11 +301,26 @@ export default function DashboardMap({
       mapRef.current?.remove();
       mapRef.current = null;
     };
-  }, [onBinSelect]);
+  }, [binsGeoJSON, onBinSelect]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
+
+    const binSource = map.getSource("bins") as mapboxgl.GeoJSONSource | undefined;
+    if (binSource) {
+      binSource.setData(binsGeoJSON);
+    }
+
+    if (mapBins.length > 0 && plannedStops.length === 0) {
+      const bounds = new mapboxgl.LngLatBounds();
+      mapBins.forEach((bin) => bounds.extend([bin.lng, bin.lat]));
+
+      map.fitBounds(bounds, {
+        padding: 60,
+        duration: 700,
+      });
+    }
 
     const lineSource = map.getSource("route-line") as mapboxgl.GeoJSONSource | undefined;
     if (lineSource) {
@@ -328,36 +352,38 @@ export default function DashboardMap({
         duration: 700,
       });
     }
-  }, [routeGeoJSON, stopGeoJSON, plannedStops]);
+  }, [binsGeoJSON, mapBins, routeGeoJSON, stopGeoJSON, plannedStops]);
 
   return (
-    <div className="relative w-full h-[520px] rounded-xl overflow-hidden border bg-white">
-      <div ref={mapContainer} className="w-full h-full" />
+    <div className="relative h-[520px] w-full overflow-hidden rounded-xl border bg-white">
+      <div ref={mapContainer} className="h-full w-full" />
 
       <div className="absolute left-4 top-4 rounded-lg border bg-white/95 p-3 text-xs shadow">
-        <div className="font-semibold mb-2">Legend</div>
+        <div className="mb-2 font-semibold">Legend</div>
 
-        <div className="flex items-center gap-2 mb-1">
-          <span className="inline-block h-3 w-3 rounded-full bg-red-500 border border-white" />
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-block h-3 w-3 rounded-full border border-white bg-red-500" />
           <span>Urgent (Fill ≥ 80%)</span>
         </div>
 
-        <div className="flex items-center gap-2 mb-1">
-          <span className="inline-block h-3 w-3 rounded-full bg-emerald-500 border border-white" />
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-block h-3 w-3 rounded-full border border-white bg-emerald-500" />
           <span>East campus</span>
         </div>
 
-        <div className="flex items-center gap-2 mb-1">
-          <span className="inline-block h-3 w-3 rounded-full bg-blue-500 border border-white" />
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-block h-3 w-3 rounded-full border border-white bg-blue-500" />
           <span>West campus</span>
         </div>
 
-        <div className="flex items-center gap-2 mb-2">
+        <div className="mb-2 flex items-center gap-2">
           <span className="inline-block h-1 w-6 bg-slate-900" />
           <span>Optimized route</span>
         </div>
 
-        <div className="text-[11px] text-gray-600">Route markers show visit order</div>
+        <div className="text-[11px] text-gray-600">
+          Route markers show visit order
+        </div>
       </div>
     </div>
   );
