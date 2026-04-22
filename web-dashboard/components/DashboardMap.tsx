@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import mapboxgl from "mapbox-gl";
-import "mapbox-gl/dist/mapbox-gl.css";
 import { bins } from "@/lib/bins";
 
 export type PlannedStop = {
@@ -15,42 +14,28 @@ export type PlannedStop = {
   risk: "Low" | "Medium" | "High";
 };
 
+const EAST_DEPOT: [number, number] = [50.204268, 26.397820];
+const WEST_DEPOT: [number, number] = [50.186365, 26.383639];
+const LANDFILL: [number, number] = [49.86990882883503, 26.160087740331367];
+
 export default function DashboardMap({
   onBinSelect,
   plannedStops = [],
+  routeGeometry = null,
   showRoute = false,
 }: {
   onBinSelect?: (binId: string) => void;
   plannedStops?: PlannedStop[];
+  routeGeometry?: GeoJSON.FeatureCollection<GeoJSON.LineString> | null;
   showRoute?: boolean;
 }) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
 
   const routeGeoJSON = useMemo(() => {
-    if (!showRoute || plannedStops.length === 0) return null;
-
-    const depot: [number, number] = [50.1905, 26.3898];
-
-    const coordinates: [number, number][] = [
-      depot,
-      ...plannedStops.map((stop) => [stop.lng, stop.lat] as [number, number]),
-    ];
-
-    return {
-      type: "FeatureCollection" as const,
-      features: [
-        {
-          type: "Feature" as const,
-          geometry: {
-            type: "LineString" as const,
-            coordinates,
-          },
-          properties: {},
-        },
-      ],
-    };
-  }, [plannedStops, showRoute]);
+    if (!showRoute || !routeGeometry) return null;
+    return routeGeometry;
+  }, [routeGeometry, showRoute]);
 
   const stopGeoJSON = useMemo(() => {
     if (!plannedStops.length) return null;
@@ -90,7 +75,7 @@ export default function DashboardMap({
     mapRef.current = map;
 
     map.on("load", () => {
-      const geojson: GeoJSON.FeatureCollection<GeoJSON.Point> = {
+      const binsGeoJSON: GeoJSON.FeatureCollection<GeoJSON.Point> = {
         type: "FeatureCollection",
         features: bins.map((b) => ({
           type: "Feature",
@@ -109,9 +94,30 @@ export default function DashboardMap({
         })),
       };
 
+      const specialGeoJSON: GeoJSON.FeatureCollection<GeoJSON.Point> = {
+        type: "FeatureCollection",
+        features: [
+          {
+            type: "Feature",
+            geometry: { type: "Point", coordinates: EAST_DEPOT },
+            properties: { label: "East Truck", kind: "east_depot" },
+          },
+          {
+            type: "Feature",
+            geometry: { type: "Point", coordinates: WEST_DEPOT },
+            properties: { label: "West Truck", kind: "west_depot" },
+          },
+          {
+            type: "Feature",
+            geometry: { type: "Point", coordinates: LANDFILL },
+            properties: { label: "Landfill", kind: "landfill" },
+          },
+        ],
+      };
+
       map.addSource("bins", {
         type: "geojson",
-        data: geojson,
+        data: binsGeoJSON,
       });
 
       map.addLayer({
@@ -123,14 +129,10 @@ export default function DashboardMap({
             "interpolate",
             ["linear"],
             ["get", "fillPct"],
-            0,
-            6,
-            50,
-            10,
-            80,
-            14,
-            100,
-            18,
+            0, 6,
+            50, 10,
+            80, 14,
+            100, 18,
           ],
           "circle-stroke-width": 2,
           "circle-stroke-color": "#ffffff",
@@ -141,10 +143,8 @@ export default function DashboardMap({
             [
               "match",
               ["get", "side"],
-              "East",
-              "#10b981",
-              "West",
-              "#3b82f6",
+              "East", "#10b981",
+              "West", "#3b82f6",
               "#9ca3af",
             ],
           ],
@@ -152,40 +152,48 @@ export default function DashboardMap({
         },
       });
 
-      map.on("mouseenter", "bins-circles", () => {
-        map.getCanvas().style.cursor = "pointer";
+      map.addSource("special-points", {
+        type: "geojson",
+        data: specialGeoJSON,
       });
 
-      map.on("mouseleave", "bins-circles", () => {
-        map.getCanvas().style.cursor = "";
+      map.addLayer({
+        id: "special-points-layer",
+        type: "circle",
+        source: "special-points",
+        paint: {
+          "circle-radius": 10,
+          "circle-stroke-width": 3,
+          "circle-stroke-color": "#ffffff",
+          "circle-color": [
+            "match",
+            ["get", "kind"],
+            "east_depot", "#10b981",
+            "west_depot", "#3b82f6",
+            "landfill", "#111827",
+            "#6b7280",
+          ],
+        },
       });
 
-      map.on("click", "bins-circles", (e) => {
-        const feature = e.features?.[0];
-        if (!feature) return;
-
-        const coords = (feature.geometry as any).coordinates.slice();
-        const props = feature.properties as any;
-
-        if (onBinSelect && props?.id) {
-          onBinSelect(props.id);
-        }
-
-        const html = `
-          <div style="font-family: ui-sans-serif; font-size: 12px;">
-            <div style="font-weight: 700; margin-bottom: 6px;">
-              ${props.id} • ${props.side}
-            </div>
-            <div><b>Place:</b> ${props.placeName}</div>
-            <div><b>Building:</b> ${props.buildingNumber}</div>
-            <div><b>Fill:</b> ${props.fillPct}%</div>
-          </div>
-        `;
-
-        new mapboxgl.Popup({ offset: 12 })
-          .setLngLat(coords)
-          .setHTML(html)
-          .addTo(map);
+      map.addLayer({
+        id: "special-points-labels",
+        type: "symbol",
+        source: "special-points",
+        layout: {
+          "text-field": [
+            "match",
+            ["get", "kind"],
+            "east_depot", "E",
+            "west_depot", "W",
+            "landfill", "L",
+            "?"
+          ],
+          "text-size": 12,
+        },
+        paint: {
+          "text-color": "#ffffff",
+        },
       });
 
       map.addSource("route-line", {
@@ -205,7 +213,13 @@ export default function DashboardMap({
           "line-cap": "round",
         },
         paint: {
-          "line-color": "#111827",
+          "line-color": [
+            "match",
+            ["get", "campus"],
+            "East", "#2563eb",
+            "West", "#ef4444",
+            "#111827",
+          ],
           "line-width": 4,
           "line-opacity": 0.85,
         },
@@ -230,12 +244,9 @@ export default function DashboardMap({
           "circle-color": [
             "match",
             ["get", "risk"],
-            "High",
-            "#ef4444",
-            "Medium",
-            "#f59e0b",
-            "Low",
-            "#10b981",
+            "High", "#ef4444",
+            "Medium", "#f59e0b",
+            "Low", "#10b981",
             "#6b7280",
           ],
         },
@@ -253,43 +264,10 @@ export default function DashboardMap({
           "text-color": "#ffffff",
         },
       });
-
-      map.on("click", "route-stops-layer", (e) => {
-        const feature = e.features?.[0];
-        if (!feature) return;
-
-        const coords = (feature.geometry as any).coordinates.slice();
-        const props = feature.properties as any;
-
-        const html = `
-          <div style="font-family: ui-sans-serif; font-size: 12px;">
-            <div style="font-weight: 700; margin-bottom: 6px;">
-              ${props.binId}
-            </div>
-            <div><b>Order:</b> ${props.priority}</div>
-            <div><b>ETA:</b> ${props.eta}</div>
-            <div><b>Fill:</b> ${props.fillPct}%</div>
-            <div><b>Risk:</b> ${props.risk}</div>
-          </div>
-        `;
-
-        new mapboxgl.Popup({ offset: 12 })
-          .setLngLat(coords)
-          .setHTML(html)
-          .addTo(map);
-      });
-
-      map.on("mouseenter", "route-stops-layer", () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-
-      map.on("mouseleave", "route-stops-layer", () => {
-        map.getCanvas().style.cursor = "";
-      });
     });
 
     return () => {
-      mapRef.current?.remove();
+      map.remove();
       mapRef.current = null;
     };
   }, [onBinSelect]);
@@ -318,10 +296,23 @@ export default function DashboardMap({
       );
     }
 
-    if (plannedStops.length > 0) {
+    if (plannedStops.length > 0 || routeGeoJSON) {
       const bounds = new mapboxgl.LngLatBounds();
-      bounds.extend([50.1905, 26.3898]);
+      bounds.extend(EAST_DEPOT);
+      bounds.extend(WEST_DEPOT);
+      bounds.extend(LANDFILL);
+
       plannedStops.forEach((stop) => bounds.extend([stop.lng, stop.lat]));
+
+      if (routeGeoJSON) {
+        routeGeoJSON.features.forEach((feature) => {
+          if (feature.geometry.type === "LineString") {
+            feature.geometry.coordinates.forEach((coord) => {
+              bounds.extend(coord as [number, number]);
+            });
+          }
+        });
+      }
 
       map.fitBounds(bounds, {
         padding: 60,
@@ -335,24 +326,39 @@ export default function DashboardMap({
       <div ref={mapContainer} className="w-full h-full" />
 
       <div className="absolute left-4 top-4 rounded-lg border bg-white/95 p-3 text-xs shadow">
-        <div className="font-semibold mb-2">Legend</div>
+        <div className="mb-2 font-semibold">Legend</div>
 
-        <div className="flex items-center gap-2 mb-1">
-          <span className="inline-block h-3 w-3 rounded-full bg-red-500 border border-white" />
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-block h-3 w-3 rounded-full border border-white bg-red-500" />
           <span>Urgent (Fill ≥ 80%)</span>
         </div>
 
-        <div className="flex items-center gap-2 mb-1">
-          <span className="inline-block h-3 w-3 rounded-full bg-emerald-500 border border-white" />
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-block h-3 w-3 rounded-full border border-white bg-emerald-500" />
           <span>East campus</span>
         </div>
 
-        <div className="flex items-center gap-2 mb-1">
-          <span className="inline-block h-3 w-3 rounded-full bg-blue-500 border border-white" />
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-block h-3 w-3 rounded-full border border-white bg-blue-500" />
           <span>West campus</span>
         </div>
 
-        <div className="flex items-center gap-2 mb-2">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-[10px] font-bold text-white">E</span>
+          <span>East truck</span>
+        </div>
+
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white">W</span>
+          <span>West truck</span>
+        </div>
+
+        <div className="mb-2 flex items-center gap-2">
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-slate-900 text-[10px] font-bold text-white">L</span>
+          <span>Landfill</span>
+        </div>
+
+        <div className="mb-2 flex items-center gap-2">
           <span className="inline-block h-1 w-6 bg-slate-900" />
           <span>Optimized route</span>
         </div>

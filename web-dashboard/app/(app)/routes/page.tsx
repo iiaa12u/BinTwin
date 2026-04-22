@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import DashboardMap, { type PlannedStop } from "@/components/DashboardMap";
 import { bins } from "@/lib/bins";
@@ -8,8 +8,8 @@ import { bins } from "@/lib/bins";
 type ZoneValue = "All" | "East" | "West";
 type GoalValue = "distance" | "time" | "overflow";
 type ViewMode = "dynamic" | "baseline";
-
 type RouteRisk = "Low" | "Medium" | "High";
+type RouteGeometry = any;
 
 type RouteStop = {
   id: string;
@@ -61,6 +61,7 @@ type RoutePlan = {
     overflowPrevented: number;
   };
   routeStops: RouteStop[];
+  routeGeometry: RouteGeometry;
   driverRoute: DriverRoute;
 };
 
@@ -75,12 +76,16 @@ type OptimizationSession = {
     goal: GoalValue;
     autoSelect: boolean;
     manualBinId: string;
+    forecastHorizon: string;
   };
-  baselinePlan: RoutePlan;
-  dynamicPlan: RoutePlan;
+  baselinePlan: RoutePlan | null;
+  dynamicPlan: RoutePlan | null;
   approvedPlan: RoutePlan | null;
   savedAt: string;
 };
+
+const BACKEND_URL = "http://127.0.0.1:8000/solve-route";
+const FETCH_TIMEOUT_MS = 30000;
 
 export default function RoutesPage() {
   const router = useRouter();
@@ -98,7 +103,10 @@ export default function RoutesPage() {
   const [baselinePlan, setBaselinePlan] = useState<RoutePlan | null>(null);
   const [dynamicPlan, setDynamicPlan] = useState<RoutePlan | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("dynamic");
+
   const [isLoading, setIsLoading] = useState(false);
+  const [isDynamicLoading, setIsDynamicLoading] = useState(false);
+  const [isBaselineLoading, setIsBaselineLoading] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
 
   const manualBinOptions = useMemo(() => {
@@ -121,9 +129,8 @@ export default function RoutesPage() {
     return 1200;
   }
 
-  async function fetchPlan(mode: "dynamic" | "static") {
-    const body = {
-      mode,
+  function getFilters() {
+    return {
       zone,
       threshold,
       truckLabel: truck,
@@ -135,63 +142,100 @@ export default function RoutesPage() {
       manualBinId: manualBin,
       forecastHorizon,
     };
+  }
 
-    const response = await fetch("http://127.0.0.1:8000/solve-route", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
+  async function fetchPlan(mode: "dynamic" | "static"): Promise<RoutePlan> {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-    if (!response.ok) {
-      throw new Error(`Backend error: ${response.status}`);
+    try {
+      const response = await fetch(BACKEND_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          mode,
+          ...getFilters(),
+        }),
+        signal: controller.signal,
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        throw new Error(`Backend error: ${response.status}`);
+      }
+
+      return (await response.json()) as RoutePlan;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        throw new Error(`${mode} route timed out after ${FETCH_TIMEOUT_MS / 1000}s`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
+  }
 
-    return (await response.json()) as RoutePlan;
+  async function loadBaselineInBackground() {
+    try {
+      setIsBaselineLoading(true);
+      const plan = await fetchPlan("static");
+      setBaselinePlan(plan);
+
+      const existing = localStorage.getItem("optimizationSession");
+      if (existing) {
+        const parsed = JSON.parse(existing) as OptimizationSession;
+        parsed.baselinePlan = plan;
+        parsed.savedAt = new Date().toISOString();
+        localStorage.setItem("optimizationSession", JSON.stringify(parsed));
+      }
+    } catch (error) {
+      console.error("Static route error:", error);
+      setBackendError((prev) =>
+        prev ? prev : "Dynamic route loaded, but Static baseline failed or timed out."
+      );
+    } finally {
+      setIsBaselineLoading(false);
+    }
   }
 
   async function buildSession() {
     setIsLoading(true);
+    setIsDynamicLoading(true);
+    setIsBaselineLoading(false);
     setBackendError(null);
 
+    setDynamicPlan(null);
+    setBaselinePlan(null);
+
     try {
-      const [baseline, dynamic] = await Promise.all([
-        fetchPlan("static"),
-        fetchPlan("dynamic"),
-      ]);
+      const dynamic = await fetchPlan("dynamic");
+
+      setDynamicPlan(dynamic);
+      setViewMode("dynamic");
 
       const session: OptimizationSession = {
-        filters: {
-          zone,
-          threshold,
-          truckLabel: truck,
-          truckCapacityKg: getTruckCapacityKg(truck),
-          shiftStart,
-          shiftEnd,
-          goal,
-          autoSelect,
-          manualBinId: manualBin,
-        },
-        baselinePlan: baseline,
+        filters: getFilters(),
+        baselinePlan: null,
         dynamicPlan: dynamic,
         approvedPlan: null,
         savedAt: new Date().toISOString(),
       };
 
       localStorage.setItem("optimizationSession", JSON.stringify(session));
-      setBaselinePlan(baseline);
-      setDynamicPlan(dynamic);
-      setViewMode("dynamic");
+
+      loadBaselineInBackground();
 
       return session;
     } catch (error) {
       console.error(error);
       setBackendError(
-        "Failed to get route from Python backend. Make sure uvicorn is still running on port 8000."
+        "Failed to get Dynamic route from Python backend. The backend may be slow or OSRM may have timed out."
       );
       return null;
     } finally {
+      setIsDynamicLoading(false);
       setIsLoading(false);
     }
   }
@@ -206,7 +250,11 @@ export default function RoutesPage() {
     if (!selectedPlan) {
       const session = await buildSession();
       if (!session) return;
-      selectedPlan = viewMode === "dynamic" ? session.dynamicPlan : session.baselinePlan;
+
+      selectedPlan =
+        viewMode === "dynamic" ? session.dynamicPlan : session.baselinePlan;
+
+      if (!selectedPlan) return;
     }
 
     localStorage.setItem("driverRouteState", JSON.stringify(selectedPlan.driverRoute));
@@ -219,18 +267,16 @@ export default function RoutesPage() {
     if (!sessionRaw) {
       const session = await buildSession();
       if (!session) return;
+      sessionRaw = JSON.stringify(session);
     }
 
+    localStorage.setItem("optimizationSession", sessionRaw);
     router.push("/scenarios");
   }
 
-  const hasGenerated = baselinePlan !== null && dynamicPlan !== null;
+  const hasGenerated = baselinePlan !== null || dynamicPlan !== null;
 
-  const displayPlan = hasGenerated
-    ? viewMode === "dynamic"
-      ? dynamicPlan
-      : baselinePlan
-    : null;
+  const displayPlan = viewMode === "dynamic" ? dynamicPlan : baselinePlan;
 
   const displayKpis = displayPlan?.kpis ?? {
     totalActiveBins: 0,
@@ -248,6 +294,7 @@ export default function RoutesPage() {
   };
 
   const displayStops = displayPlan?.routeStops ?? [];
+  const displayRouteGeometry = displayPlan?.routeGeometry ?? null;
 
   const plannedStopsForMap: PlannedStop[] = displayStops
     .map((stop) => {
@@ -265,6 +312,8 @@ export default function RoutesPage() {
       };
     })
     .filter((item): item is PlannedStop => item !== null);
+
+  const dynamicTabDisabled = !dynamicPlan && !isDynamicLoading;
 
   return (
     <div className="min-h-[calc(100vh-56px)] bg-gray-50 text-gray-900">
@@ -432,26 +481,45 @@ export default function RoutesPage() {
           <section className="col-span-12 xl:col-span-6 space-y-6">
             <div className="flex gap-2">
               <button
-                onClick={() => setViewMode("dynamic")}
-                disabled={!hasGenerated}
+                onClick={() => dynamicPlan && setViewMode("dynamic")}
+                disabled={dynamicTabDisabled}
                 className={`rounded-lg px-4 py-2 text-sm font-semibold ${
                   viewMode === "dynamic"
                     ? "bg-emerald-500 text-white"
                     : "border border-gray-200 bg-white"
-                } ${!hasGenerated ? "cursor-not-allowed opacity-50" : ""}`}
+                } ${dynamicTabDisabled ? "cursor-not-allowed opacity-50" : ""}`}
               >
-                Dynamic
+                {isDynamicLoading ? "Dynamic..." : "Dynamic"}
               </button>
+
               <button
-                onClick={() => setViewMode("baseline")}
-                disabled={!hasGenerated}
+                onClick={async () => {
+                  if (baselinePlan) {
+                    setViewMode("baseline");
+                    return;
+                  }
+
+                  try {
+                    setIsBaselineLoading(true);
+                    setBackendError(null);
+                    const plan = await fetchPlan("static");
+                    setBaselinePlan(plan);
+                    setViewMode("baseline");
+                  } catch (error) {
+                    console.error("Static route error:", error);
+                    setBackendError("Static baseline failed or timed out.");
+                  } finally {
+                    setIsBaselineLoading(false);
+                  }
+                }}
+                disabled={isBaselineLoading}
                 className={`rounded-lg px-4 py-2 text-sm font-semibold ${
                   viewMode === "baseline"
                     ? "bg-slate-900 text-white"
                     : "border border-gray-200 bg-white"
-                } ${!hasGenerated ? "cursor-not-allowed opacity-50" : ""}`}
+                } ${isBaselineLoading ? "cursor-not-allowed opacity-50" : ""}`}
               >
-                Static Baseline
+                {isBaselineLoading ? "Static..." : "Static Baseline"}
               </button>
             </div>
 
@@ -464,7 +532,11 @@ export default function RoutesPage() {
             </div>
 
             <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
-              <DashboardMap plannedStops={plannedStopsForMap} showRoute={hasGenerated} />
+              <DashboardMap
+                plannedStops={plannedStopsForMap}
+                routeGeometry={displayRouteGeometry}
+                showRoute={hasGenerated}
+              />
             </div>
           </section>
 
@@ -528,7 +600,7 @@ export default function RoutesPage() {
               <div className="mt-6 space-y-3">
                 <button
                   onClick={handleSendToDriver}
-                  disabled={!hasGenerated}
+                  disabled={!displayPlan}
                   className="w-full rounded-lg bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Send to Driver
@@ -536,14 +608,14 @@ export default function RoutesPage() {
 
                 <button
                   className="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50"
-                  disabled={!hasGenerated}
+                  disabled={!displayPlan}
                 >
                   Export Route
                 </button>
 
                 <button
                   onClick={handleSaveScenario}
-                  disabled={!hasGenerated}
+                  disabled={!displayPlan}
                   className="w-full rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   Save Scenario
@@ -562,7 +634,7 @@ function Field({
   children,
 }: {
   label: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div>
