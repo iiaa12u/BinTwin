@@ -19,13 +19,19 @@ type DashboardMapProps = {
   bins?: BinPoint[];
   onBinSelect?: (binId: string) => void;
   plannedStops?: PlannedStop[];
+  routeGeometry?: GeoJSON.FeatureCollection<GeoJSON.LineString> | null;
   showRoute?: boolean;
 };
+
+const EAST_DEPOT: [number, number] = [50.204268, 26.39782];
+const WEST_DEPOT: [number, number] = [50.186365, 26.383639];
+const LANDFILL: [number, number] = [49.86990882883503, 26.160087740331367];
 
 export default function DashboardMap({
   bins,
   onBinSelect,
   plannedStops = [],
+  routeGeometry = null,
   showRoute = false,
 }: DashboardMapProps) {
   const mapContainer = useRef<HTMLDivElement | null>(null);
@@ -34,29 +40,9 @@ export default function DashboardMap({
   const mapBins = bins ?? defaultBins;
 
   const routeGeoJSON = useMemo(() => {
-    if (!showRoute || plannedStops.length === 0) return null;
-
-    const depot: [number, number] = [50.1905, 26.3898];
-
-    const coordinates: [number, number][] = [
-      depot,
-      ...plannedStops.map((stop) => [stop.lng, stop.lat] as [number, number]),
-    ];
-
-    return {
-      type: "FeatureCollection" as const,
-      features: [
-        {
-          type: "Feature" as const,
-          geometry: {
-            type: "LineString" as const,
-            coordinates,
-          },
-          properties: {},
-        },
-      ],
-    };
-  }, [plannedStops, showRoute]);
+    if (!showRoute || !routeGeometry) return null;
+    return routeGeometry;
+  }, [routeGeometry, showRoute]);
 
   const stopGeoJSON = useMemo(() => {
     if (!plannedStops.length) return null;
@@ -100,6 +86,30 @@ export default function DashboardMap({
       })),
     }),
     [mapBins]
+  );
+
+  const specialGeoJSON = useMemo<GeoJSON.FeatureCollection<GeoJSON.Point>>(
+    () => ({
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: EAST_DEPOT },
+          properties: { label: "East Truck", kind: "east_depot" },
+        },
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: WEST_DEPOT },
+          properties: { label: "West Truck", kind: "west_depot" },
+        },
+        {
+          type: "Feature",
+          geometry: { type: "Point", coordinates: LANDFILL },
+          properties: { label: "Landfill", kind: "landfill" },
+        },
+      ],
+    }),
+    []
   );
 
   useEffect(() => {
@@ -173,11 +183,14 @@ export default function DashboardMap({
         const feature = e.features?.[0];
         if (!feature) return;
 
-        const coords = (feature.geometry as any).coordinates.slice();
-        const props = feature.properties as any;
+        const coords = (feature.geometry as GeoJSON.Point).coordinates as [
+          number,
+          number
+        ];
+        const props = feature.properties as Record<string, any>;
 
         if (onBinSelect && props?.id) {
-          onBinSelect(props.id);
+          onBinSelect(String(props.id));
         }
 
         const html = `
@@ -187,6 +200,7 @@ export default function DashboardMap({
             </div>
             <div><b>Place:</b> ${props.placeName}</div>
             <div><b>Building:</b> ${props.buildingNumber}</div>
+            <div><b>Bin:</b> ${props.binNumber}</div>
             <div><b>Fill:</b> ${props.fillPct}%</div>
           </div>
         `;
@@ -195,6 +209,56 @@ export default function DashboardMap({
           .setLngLat(coords)
           .setHTML(html)
           .addTo(map);
+      });
+
+      map.addSource("special-points", {
+        type: "geojson",
+        data: specialGeoJSON,
+      });
+
+      map.addLayer({
+        id: "special-points-layer",
+        type: "circle",
+        source: "special-points",
+        paint: {
+          "circle-radius": 10,
+          "circle-stroke-width": 3,
+          "circle-stroke-color": "#ffffff",
+          "circle-color": [
+            "match",
+            ["get", "kind"],
+            "east_depot",
+            "#10b981",
+            "west_depot",
+            "#3b82f6",
+            "landfill",
+            "#111827",
+            "#6b7280",
+          ],
+        },
+      });
+
+      map.addLayer({
+        id: "special-points-labels",
+        type: "symbol",
+        source: "special-points",
+        layout: {
+          "text-field": [
+            "match",
+            ["get", "kind"],
+            "east_depot",
+            "E",
+            "west_depot",
+            "W",
+            "landfill",
+            "L",
+            "?",
+          ],
+          "text-size": 12,
+        },
+        paint: {
+          "text-color": "#ffffff",
+        },
       });
 
       map.addSource("route-line", {
@@ -214,7 +278,15 @@ export default function DashboardMap({
           "line-cap": "round",
         },
         paint: {
-          "line-color": "#111827",
+          "line-color": [
+            "match",
+            ["get", "campus"],
+            "East",
+            "#2563eb",
+            "West",
+            "#ef4444",
+            "#111827",
+          ],
           "line-width": 4,
           "line-opacity": 0.85,
         },
@@ -263,12 +335,23 @@ export default function DashboardMap({
         },
       });
 
+      map.on("mouseenter", "route-stops-layer", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+
+      map.on("mouseleave", "route-stops-layer", () => {
+        map.getCanvas().style.cursor = "";
+      });
+
       map.on("click", "route-stops-layer", (e) => {
         const feature = e.features?.[0];
         if (!feature) return;
 
-        const coords = (feature.geometry as any).coordinates.slice();
-        const props = feature.properties as any;
+        const coords = (feature.geometry as GeoJSON.Point).coordinates as [
+          number,
+          number
+        ];
+        const props = feature.properties as Record<string, any>;
 
         const html = `
           <div style="font-family: ui-sans-serif; font-size: 12px;">
@@ -287,42 +370,38 @@ export default function DashboardMap({
           .setHTML(html)
           .addTo(map);
       });
-
-      map.on("mouseenter", "route-stops-layer", () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-
-      map.on("mouseleave", "route-stops-layer", () => {
-        map.getCanvas().style.cursor = "";
-      });
     });
 
     return () => {
-      mapRef.current?.remove();
+      map.remove();
       mapRef.current = null;
     };
-  }, [binsGeoJSON, onBinSelect]);
+  }, [binsGeoJSON, onBinSelect, specialGeoJSON]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
 
-    const binSource = map.getSource("bins") as mapboxgl.GeoJSONSource | undefined;
+    const binSource = map.getSource("bins") as
+      | mapboxgl.GeoJSONSource
+      | undefined;
+
     if (binSource) {
       binSource.setData(binsGeoJSON);
     }
 
-    if (mapBins.length > 0 && plannedStops.length === 0) {
-      const bounds = new mapboxgl.LngLatBounds();
-      mapBins.forEach((bin) => bounds.extend([bin.lng, bin.lat]));
+    const specialSource = map.getSource("special-points") as
+      | mapboxgl.GeoJSONSource
+      | undefined;
 
-      map.fitBounds(bounds, {
-        padding: 60,
-        duration: 700,
-      });
+    if (specialSource) {
+      specialSource.setData(specialGeoJSON);
     }
 
-    const lineSource = map.getSource("route-line") as mapboxgl.GeoJSONSource | undefined;
+    const lineSource = map.getSource("route-line") as
+      | mapboxgl.GeoJSONSource
+      | undefined;
+
     if (lineSource) {
       lineSource.setData(
         routeGeoJSON ?? {
@@ -332,7 +411,10 @@ export default function DashboardMap({
       );
     }
 
-    const stopSource = map.getSource("route-stops") as mapboxgl.GeoJSONSource | undefined;
+    const stopSource = map.getSource("route-stops") as
+      | mapboxgl.GeoJSONSource
+      | undefined;
+
     if (stopSource) {
       stopSource.setData(
         stopGeoJSON ?? {
@@ -342,17 +424,42 @@ export default function DashboardMap({
       );
     }
 
-    if (plannedStops.length > 0) {
-      const bounds = new mapboxgl.LngLatBounds();
-      bounds.extend([50.1905, 26.3898]);
+    const bounds = new mapboxgl.LngLatBounds();
+
+    if (mapBins.length > 0) {
+      mapBins.forEach((bin) => bounds.extend([bin.lng, bin.lat]));
+    }
+
+    if (plannedStops.length > 0 || routeGeoJSON) {
+      bounds.extend(EAST_DEPOT);
+      bounds.extend(WEST_DEPOT);
+      bounds.extend(LANDFILL);
+
       plannedStops.forEach((stop) => bounds.extend([stop.lng, stop.lat]));
 
+      if (routeGeoJSON) {
+        routeGeoJSON.features.forEach((feature) => {
+          feature.geometry.coordinates.forEach((coord) => {
+            bounds.extend(coord as [number, number]);
+          });
+        });
+      }
+    }
+
+    if (!bounds.isEmpty()) {
       map.fitBounds(bounds, {
         padding: 60,
         duration: 700,
       });
     }
-  }, [binsGeoJSON, mapBins, routeGeoJSON, stopGeoJSON, plannedStops]);
+  }, [
+    binsGeoJSON,
+    mapBins,
+    routeGeoJSON,
+    stopGeoJSON,
+    plannedStops,
+    specialGeoJSON,
+  ]);
 
   return (
     <div className="relative h-[520px] w-full overflow-hidden rounded-xl border bg-white">
@@ -374,6 +481,27 @@ export default function DashboardMap({
         <div className="mb-1 flex items-center gap-2">
           <span className="inline-block h-3 w-3 rounded-full border border-white bg-blue-500" />
           <span>West campus</span>
+        </div>
+
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-[10px] font-bold text-white">
+            E
+          </span>
+          <span>East truck</span>
+        </div>
+
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-blue-500 text-[10px] font-bold text-white">
+            W
+          </span>
+          <span>West truck</span>
+        </div>
+
+        <div className="mb-2 flex items-center gap-2">
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-slate-900 text-[10px] font-bold text-white">
+            L
+          </span>
+          <span>Landfill</span>
         </div>
 
         <div className="mb-2 flex items-center gap-2">

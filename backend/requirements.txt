@@ -4,3 +4,4 @@ ortools
 pydantic
 numpy
 pandas
+requests
