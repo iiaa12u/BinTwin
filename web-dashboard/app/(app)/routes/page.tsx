@@ -3,7 +3,20 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import DashboardMap, { type PlannedStop } from "@/components/DashboardMap";
-import { bins } from "@/lib/bins";
+import DataSourceToggle from "@/components/DataSourceToggle";
+import DataTimelineControls from "@/components/DataTimelineControls";
+
+import {
+  loadBinsFromSource,
+  loadDataRange,
+  splitDateTimeForInputs,
+  combineDateAndTime,
+  clampDateTimeToRange,
+  type DataSourceMode,
+  type UnifiedBinRecord,
+} from "@/lib/binsData";
+
+import type { BinPoint } from "@/lib/bins";
 
 type ZoneValue = "All" | "East" | "West";
 type GoalValue = "distance" | "time" | "overflow";
@@ -67,6 +80,8 @@ type RoutePlan = {
 
 type OptimizationSession = {
   filters: {
+    dataMode: DataSourceMode;
+    selectedDateTime: string;
     zone: ZoneValue;
     threshold: number;
     truckLabel: string;
@@ -87,8 +102,23 @@ type OptimizationSession = {
 const BACKEND_URL = "http://127.0.0.1:8000/solve-route";
 const FETCH_TIMEOUT_MS = 30000;
 
+function shiftMinutes(value: string, minutes: number) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  d.setMinutes(d.getMinutes() + minutes);
+  return d.toISOString();
+}
+
 export default function RoutesPage() {
   const router = useRouter();
+
+  const [dataMode, setDataMode] = useState<DataSourceMode>("synthetic");
+  const [loadedBins, setLoadedBins] = useState<UnifiedBinRecord[]>([]);
+  const [dataLoading, setDataLoading] = useState(true);
+
+  const [minTimestamp, setMinTimestamp] = useState<string | null>(null);
+  const [maxTimestamp, setMaxTimestamp] = useState<string | null>(null);
+  const [selectedDateTime, setSelectedDateTime] = useState<string>("");
 
   const [zone, setZone] = useState<ZoneValue>("All");
   const [manualBin, setManualBin] = useState("BIN-001");
@@ -109,10 +139,72 @@ export default function RoutesPage() {
   const [isBaselineLoading, setIsBaselineLoading] = useState(false);
   const [backendError, setBackendError] = useState<string | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRange() {
+      const range = await loadDataRange(dataMode);
+      if (cancelled) return;
+
+      setMinTimestamp(range.minTimestamp);
+      setMaxTimestamp(range.maxTimestamp);
+      setSelectedDateTime(range.maxTimestamp ?? "");
+    }
+
+    loadRange();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dataMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSelectedBins() {
+      if (!selectedDateTime) return;
+
+      setDataLoading(true);
+      const data = await loadBinsFromSource(dataMode, selectedDateTime);
+
+      if (!cancelled) {
+        setLoadedBins(data);
+        setDataLoading(false);
+        setBaselinePlan(null);
+        setDynamicPlan(null);
+      }
+    }
+
+    loadSelectedBins();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dataMode, selectedDateTime]);
+
+  const { date: selectedDate, time: selectedTime } =
+    splitDateTimeForInputs(selectedDateTime);
+
+  const mapBins: BinPoint[] = useMemo(
+    () =>
+      loadedBins.map((bin) => ({
+        id: bin.id,
+        placeName: bin.placeName,
+        side: bin.side,
+        lat: bin.lat,
+        lng: bin.lng,
+        fillPct: bin.currentFillPct ?? 0,
+        buildingNumber: bin.buildingNumber,
+        binNumber: bin.binNumber,
+        lastUpdate: bin.currentTimestamp ?? "",
+      })),
+    [loadedBins]
+  );
+
   const manualBinOptions = useMemo(() => {
-    if (zone === "All") return bins;
-    return bins.filter((bin) => bin.side === zone);
-  }, [zone]);
+    if (zone === "All") return loadedBins;
+    return loadedBins.filter((bin) => bin.side === zone);
+  }, [zone, loadedBins]);
 
   useEffect(() => {
     if (
@@ -131,6 +223,8 @@ export default function RoutesPage() {
 
   function getFilters() {
     return {
+      dataMode,
+      selectedDateTime,
       zone,
       threshold,
       truckLabel: truck,
@@ -142,6 +236,12 @@ export default function RoutesPage() {
       manualBinId: manualBin,
       forecastHorizon,
     };
+  }
+
+  function setCombinedDateTime(date: string, time: string) {
+    const next = combineDateAndTime(date, time);
+    const clamped = clampDateTimeToRange(next, minTimestamp, maxTimestamp);
+    setSelectedDateTime(clamped);
   }
 
   async function fetchPlan(mode: "dynamic" | "static"): Promise<RoutePlan> {
@@ -157,6 +257,21 @@ export default function RoutesPage() {
         body: JSON.stringify({
           mode,
           ...getFilters(),
+
+          // Keeps backend ready for real/synthetic integration.
+          // If your backend does not use this yet, it will simply ignore it.
+          bins: loadedBins.map((bin) => ({
+            id: bin.id,
+            placeName: bin.placeName,
+            side: bin.side,
+            lat: bin.lat,
+            lng: bin.lng,
+            buildingNumber: bin.buildingNumber,
+            binNumber: bin.binNumber,
+            currentFillPct: bin.currentFillPct ?? 0,
+            forecastFillPct: bin.forecastFillPct ?? null,
+            currentStatus: bin.currentStatus ?? null,
+          })),
         }),
         signal: controller.signal,
         cache: "no-store",
@@ -275,16 +390,42 @@ export default function RoutesPage() {
   }
 
   const hasGenerated = baselinePlan !== null || dynamicPlan !== null;
-
   const displayPlan = viewMode === "dynamic" ? dynamicPlan : baselinePlan;
 
-  const displayKpis = displayPlan?.kpis ?? {
-    totalActiveBins: 0,
-    binsAbove80: 0,
-    selectedBins: 0,
-    averageFillLevel: 0,
-    overThreshold: 0,
-  };
+  const localKpis = useMemo(() => {
+    const totalActiveBins = loadedBins.length;
+    const binsAbove80 = loadedBins.filter(
+      (bin) => (bin.currentFillPct ?? 0) >= 80
+    ).length;
+    const averageFillLevel =
+      loadedBins.length > 0
+        ? Number(
+            (
+              loadedBins.reduce((sum, bin) => sum + (bin.currentFillPct ?? 0), 0) /
+              loadedBins.length
+            ).toFixed(1)
+          )
+        : 0;
+
+    const overThreshold = loadedBins.filter((bin) => {
+      const decisionFill =
+        dataMode === "real"
+          ? bin.forecastFillPct ?? bin.currentFillPct ?? 0
+          : bin.currentFillPct ?? 0;
+
+      return decisionFill >= threshold;
+    }).length;
+
+    return {
+      totalActiveBins,
+      binsAbove80,
+      selectedBins: overThreshold,
+      averageFillLevel,
+      overThreshold,
+    };
+  }, [loadedBins, threshold, dataMode]);
+
+  const displayKpis = displayPlan?.kpis ?? localKpis;
 
   const displaySummary = displayPlan?.summary ?? {
     totalBins: 0,
@@ -298,7 +439,7 @@ export default function RoutesPage() {
 
   const plannedStopsForMap: PlannedStop[] = displayStops
     .map((stop) => {
-      const bin = bins.find((b) => b.id === stop.binId);
+      const bin = mapBins.find((b) => b.id === stop.binId);
       if (!bin) return null;
 
       return {
@@ -326,6 +467,42 @@ export default function RoutesPage() {
               </h2>
 
               <div className="mt-5 space-y-4">
+                <DataSourceToggle value={dataMode} onChange={setDataMode} />
+
+                <DataTimelineControls
+                  loading={dataLoading}
+                  minTimestamp={minTimestamp}
+                  maxTimestamp={maxTimestamp}
+                  selectedDate={selectedDate}
+                  selectedTime={selectedTime}
+                  onDateChange={(date) => setCombinedDateTime(date, selectedTime)}
+                  onTimeChange={(time) => setCombinedDateTime(selectedDate, time)}
+                  onJumpStart={() =>
+                    minTimestamp && setSelectedDateTime(minTimestamp)
+                  }
+                  onJumpLatest={() =>
+                    maxTimestamp && setSelectedDateTime(maxTimestamp)
+                  }
+                  onStepBack={() =>
+                    setSelectedDateTime((prev) =>
+                      clampDateTimeToRange(
+                        shiftMinutes(prev, -15),
+                        minTimestamp,
+                        maxTimestamp
+                      )
+                    )
+                  }
+                  onStepForward={() =>
+                    setSelectedDateTime((prev) =>
+                      clampDateTimeToRange(
+                        shiftMinutes(prev, 15),
+                        minTimestamp,
+                        maxTimestamp
+                      )
+                    )
+                  }
+                />
+
                 <Field label="Zone">
                   <select
                     value={zone}
@@ -366,7 +543,9 @@ export default function RoutesPage() {
                 </Field>
 
                 <div>
-                  <div className="mb-1 text-sm font-medium text-gray-800">Shift Time</div>
+                  <div className="mb-1 text-sm font-medium text-gray-800">
+                    Shift Time
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <input
                       value={shiftStart}
@@ -382,7 +561,9 @@ export default function RoutesPage() {
                 </div>
 
                 <div>
-                  <div className="mb-2 text-sm font-medium text-gray-800">Optimization Goal</div>
+                  <div className="mb-2 text-sm font-medium text-gray-800">
+                    Optimization Goal
+                  </div>
                   <div className="space-y-2 text-sm">
                     <label className="flex items-center gap-2">
                       <input
@@ -392,6 +573,7 @@ export default function RoutesPage() {
                       />
                       Minimize Distance
                     </label>
+
                     <label className="flex items-center gap-2">
                       <input
                         type="radio"
@@ -400,6 +582,7 @@ export default function RoutesPage() {
                       />
                       Minimize Time
                     </label>
+
                     <label className="flex items-center gap-2">
                       <input
                         type="radio"
@@ -469,7 +652,7 @@ export default function RoutesPage() {
 
                 <button
                   onClick={handleGenerateRoute}
-                  disabled={isLoading}
+                  disabled={isLoading || dataLoading || loadedBins.length === 0}
                   className="mt-2 w-full rounded-lg bg-emerald-500 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isLoading ? "Generating..." : "Generate Optimal Routes"}
@@ -479,48 +662,54 @@ export default function RoutesPage() {
           </aside>
 
           <section className="col-span-12 xl:col-span-6 space-y-6">
-            <div className="flex gap-2">
-              <button
-                onClick={() => dynamicPlan && setViewMode("dynamic")}
-                disabled={dynamicTabDisabled}
-                className={`rounded-lg px-4 py-2 text-sm font-semibold ${
-                  viewMode === "dynamic"
-                    ? "bg-emerald-500 text-white"
-                    : "border border-gray-200 bg-white"
-                } ${dynamicTabDisabled ? "cursor-not-allowed opacity-50" : ""}`}
-              >
-                {isDynamicLoading ? "Dynamic..." : "Dynamic"}
-              </button>
+            <div className="flex items-center justify-between">
+              <div className="text-lg font-semibold">
+                Routes ({dataMode === "real" ? "Real + Forecast" : "Synthetic"})
+              </div>
 
-              <button
-                onClick={async () => {
-                  if (baselinePlan) {
-                    setViewMode("baseline");
-                    return;
-                  }
+              <div className="flex gap-2">
+                <button
+                  onClick={() => dynamicPlan && setViewMode("dynamic")}
+                  disabled={dynamicTabDisabled}
+                  className={`rounded-lg px-4 py-2 text-sm font-semibold ${
+                    viewMode === "dynamic"
+                      ? "bg-emerald-500 text-white"
+                      : "border border-gray-200 bg-white"
+                  } ${dynamicTabDisabled ? "cursor-not-allowed opacity-50" : ""}`}
+                >
+                  {isDynamicLoading ? "Dynamic..." : "Dynamic"}
+                </button>
 
-                  try {
-                    setIsBaselineLoading(true);
-                    setBackendError(null);
-                    const plan = await fetchPlan("static");
-                    setBaselinePlan(plan);
-                    setViewMode("baseline");
-                  } catch (error) {
-                    console.error("Static route error:", error);
-                    setBackendError("Static baseline failed or timed out.");
-                  } finally {
-                    setIsBaselineLoading(false);
-                  }
-                }}
-                disabled={isBaselineLoading}
-                className={`rounded-lg px-4 py-2 text-sm font-semibold ${
-                  viewMode === "baseline"
-                    ? "bg-slate-900 text-white"
-                    : "border border-gray-200 bg-white"
-                } ${isBaselineLoading ? "cursor-not-allowed opacity-50" : ""}`}
-              >
-                {isBaselineLoading ? "Static..." : "Static Baseline"}
-              </button>
+                <button
+                  onClick={async () => {
+                    if (baselinePlan) {
+                      setViewMode("baseline");
+                      return;
+                    }
+
+                    try {
+                      setIsBaselineLoading(true);
+                      setBackendError(null);
+                      const plan = await fetchPlan("static");
+                      setBaselinePlan(plan);
+                      setViewMode("baseline");
+                    } catch (error) {
+                      console.error("Static route error:", error);
+                      setBackendError("Static baseline failed or timed out.");
+                    } finally {
+                      setIsBaselineLoading(false);
+                    }
+                  }}
+                  disabled={isBaselineLoading}
+                  className={`rounded-lg px-4 py-2 text-sm font-semibold ${
+                    viewMode === "baseline"
+                      ? "bg-slate-900 text-white"
+                      : "border border-gray-200 bg-white"
+                  } ${isBaselineLoading ? "cursor-not-allowed opacity-50" : ""}`}
+                >
+                  {isBaselineLoading ? "Static..." : "Static Baseline"}
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
@@ -533,6 +722,7 @@ export default function RoutesPage() {
 
             <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
               <DashboardMap
+                bins={mapBins}
                 plannedStops={plannedStopsForMap}
                 routeGeometry={displayRouteGeometry}
                 showRoute={hasGenerated}

@@ -1,39 +1,147 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import AdminSidebar from "@/components/admin/AdminSidebar";
-import { mockBins, type BinRecord } from "@/lib/admin/binsData";
+import DataSourceToggle from "@/components/DataSourceToggle";
+import DataTimelineControls from "@/components/DataTimelineControls";
+
+import {
+  loadBinsFromSource,
+  loadDataRange,
+  splitDateTimeForInputs,
+  combineDateAndTime,
+  clampDateTimeToRange,
+  type DataSourceMode,
+  type UnifiedBinRecord,
+} from "@/lib/binsData";
+
+type ZoneFilter = "ALL" | "East" | "West";
+type StatusFilter = "ALL" | "Active" | "Maintenance Due" | "Offline";
+
+function formatPct(value?: number) {
+  if (value === undefined || Number.isNaN(value)) return "—";
+  return `${value.toFixed(1)}%`;
+}
+
+function shiftMinutes(value: string, minutes: number) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  d.setMinutes(d.getMinutes() + minutes);
+  return d.toISOString();
+}
+
+function getOperationalStatus(bin: UnifiedBinRecord): StatusFilter {
+  const fill = bin.currentFillPct ?? 0;
+
+  if (!bin.currentTimestamp) return "Offline";
+  if (fill >= 90) return "Maintenance Due";
+  return "Active";
+}
+
+function getRiskIndicator(bin: UnifiedBinRecord) {
+  const fill = bin.currentFillPct ?? 0;
+  const forecast = bin.forecastFillPct ?? 0;
+
+  if (fill >= 80 || forecast >= 80) return "High";
+  if (fill >= 60 || forecast >= 60) return "Medium";
+  return "Low";
+}
 
 export default function AdminBinsPage() {
   const [search, setSearch] = useState("");
-  const [zoneFilter, setZoneFilter] = useState("ALL");
-  const [statusFilter, setStatusFilter] = useState("ALL");
-  const [selectedBinId, setSelectedBinId] = useState<string>(mockBins[0]?.id ?? "");
+  const [zoneFilter, setZoneFilter] = useState<ZoneFilter>("ALL");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
+  const [selectedBinId, setSelectedBinId] = useState<string>("");
+
+  const [dataMode, setDataMode] = useState<DataSourceMode>("synthetic");
+  const [bins, setBins] = useState<UnifiedBinRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const [minTimestamp, setMinTimestamp] = useState<string | null>(null);
+  const [maxTimestamp, setMaxTimestamp] = useState<string | null>(null);
+  const [selectedDateTime, setSelectedDateTime] = useState<string>("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRange() {
+      const range = await loadDataRange(dataMode);
+      if (cancelled) return;
+
+      setMinTimestamp(range.minTimestamp);
+      setMaxTimestamp(range.maxTimestamp);
+      setSelectedDateTime(range.maxTimestamp ?? "");
+    }
+
+    loadRange();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dataMode]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadBins() {
+      if (!selectedDateTime) return;
+
+      setLoading(true);
+      const data = await loadBinsFromSource(dataMode, selectedDateTime);
+
+      if (!cancelled) {
+        setBins(data);
+        setLoading(false);
+
+        if (data.length > 0) {
+          setSelectedBinId((prev) =>
+            data.some((bin) => bin.id === prev) ? prev : data[0].id
+          );
+        }
+      }
+    }
+
+    loadBins();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dataMode, selectedDateTime]);
+
+  const { date: selectedDate, time: selectedTime } =
+    splitDateTimeForInputs(selectedDateTime);
+
+  function setCombinedDateTime(date: string, time: string) {
+    const next = combineDateAndTime(date, time);
+    const clamped = clampDateTimeToRange(next, minTimestamp, maxTimestamp);
+    setSelectedDateTime(clamped);
+  }
 
   const filteredBins = useMemo(() => {
     const q = search.trim().toLowerCase();
 
-    return mockBins.filter((bin) => {
+    return bins.filter((bin) => {
+      const status = getOperationalStatus(bin);
+
       const matchesSearch =
         !q ||
         bin.id.toLowerCase().includes(q) ||
+        bin.binNumber.toLowerCase().includes(q) ||
         bin.placeName.toLowerCase().includes(q) ||
-        bin.zoneAssigned.toLowerCase().includes(q);
+        bin.buildingNumber.toLowerCase().includes(q);
 
-      const matchesZone = zoneFilter === "ALL" ? true : bin.zoneAssigned === zoneFilter;
-      const matchesStatus = statusFilter === "ALL" ? true : bin.status === statusFilter;
+      const matchesZone = zoneFilter === "ALL" ? true : bin.side === zoneFilter;
+      const matchesStatus = statusFilter === "ALL" ? true : status === statusFilter;
 
       return matchesSearch && matchesZone && matchesStatus;
     });
-  }, [search, zoneFilter, statusFilter]);
+  }, [bins, search, zoneFilter, statusFilter]);
 
   const selectedBin =
     filteredBins.find((bin) => bin.id === selectedBinId) ||
-    mockBins.find((bin) => bin.id === selectedBinId) ||
+    bins.find((bin) => bin.id === selectedBinId) ||
     filteredBins[0] ||
-    mockBins[0];
-
-  const uniqueZones = Array.from(new Set(mockBins.map((b) => b.zoneAssigned)));
+    bins[0];
 
   return (
     <div className="min-h-[calc(100vh-56px)] bg-gray-50 text-gray-900">
@@ -49,13 +157,57 @@ export default function AdminBinsPage() {
                     Admin › Bins Database
                   </div>
                   <h1 className="text-lg font-semibold text-gray-900">
-                    Bins Database
+                    Bins Database ({dataMode === "real" ? "Real + Forecast" : "Synthetic"})
                   </h1>
                 </div>
 
                 <button className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">
                   + Add New Bin
                 </button>
+              </div>
+
+              <div className="mt-5 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <DataSourceToggle value={dataMode} onChange={setDataMode} />
+
+                  <div className="text-xs text-gray-500">
+                    {loading ? "Loading bins..." : `${bins.length} bin(s) loaded`}
+                  </div>
+                </div>
+
+                <DataTimelineControls
+                  loading={loading}
+                  minTimestamp={minTimestamp}
+                  maxTimestamp={maxTimestamp}
+                  selectedDate={selectedDate}
+                  selectedTime={selectedTime}
+                  onDateChange={(date) => setCombinedDateTime(date, selectedTime)}
+                  onTimeChange={(time) => setCombinedDateTime(selectedDate, time)}
+                  onJumpStart={() =>
+                    minTimestamp && setSelectedDateTime(minTimestamp)
+                  }
+                  onJumpLatest={() =>
+                    maxTimestamp && setSelectedDateTime(maxTimestamp)
+                  }
+                  onStepBack={() =>
+                    setSelectedDateTime((prev) =>
+                      clampDateTimeToRange(
+                        shiftMinutes(prev, -15),
+                        minTimestamp,
+                        maxTimestamp
+                      )
+                    )
+                  }
+                  onStepForward={() =>
+                    setSelectedDateTime((prev) =>
+                      clampDateTimeToRange(
+                        shiftMinutes(prev, 15),
+                        minTimestamp,
+                        maxTimestamp
+                      )
+                    )
+                  }
+                />
               </div>
 
               <div className="mt-5 grid grid-cols-1 gap-3 xl:grid-cols-4">
@@ -68,20 +220,17 @@ export default function AdminBinsPage() {
 
                 <select
                   value={zoneFilter}
-                  onChange={(e) => setZoneFilter(e.target.value)}
+                  onChange={(e) => setZoneFilter(e.target.value as ZoneFilter)}
                   className="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-emerald-200"
                 >
                   <option value="ALL">Filter by Zone</option>
-                  {uniqueZones.map((zone) => (
-                    <option key={zone} value={zone}>
-                      {zone}
-                    </option>
-                  ))}
+                  <option value="East">East</option>
+                  <option value="West">West</option>
                 </select>
 
                 <select
                   value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
+                  onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
                   className="rounded-lg border border-gray-200 px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-emerald-200"
                 >
                   <option value="ALL">Filter by Status</option>
@@ -99,45 +248,64 @@ export default function AdminBinsPage() {
                     <tr>
                       <th className="px-4 py-3 text-left font-semibold">Bin ID</th>
                       <th className="px-4 py-3 text-left font-semibold">Location</th>
-                      <th className="px-4 py-3 text-left font-semibold">Zone Assigned</th>
+                      <th className="px-4 py-3 text-left font-semibold">Zone</th>
                       <th className="px-4 py-3 text-left font-semibold">Sensor Type</th>
-                      <th className="px-4 py-3 text-left font-semibold">Battery Level</th>
-                      <th className="px-4 py-3 text-left font-semibold">Fill Level</th>
+                      <th className="px-4 py-3 text-left font-semibold">Battery</th>
+                      <th className="px-4 py-3 text-left font-semibold">Current Fill</th>
+                      <th className="px-4 py-3 text-left font-semibold">Forecast</th>
                       <th className="px-4 py-3 text-left font-semibold">Status</th>
                       <th className="px-4 py-3 text-right font-semibold">Actions</th>
                     </tr>
                   </thead>
 
                   <tbody className="divide-y divide-gray-100">
-                    {filteredBins.map((bin) => (
-                      <tr
-                        key={bin.id}
-                        onClick={() => setSelectedBinId(bin.id)}
-                        className={
-                          "cursor-pointer bg-white transition " +
-                          (selectedBin?.id === bin.id
-                            ? "bg-emerald-50/40"
-                            : "hover:bg-gray-50")
-                        }
-                      >
-                        <td className="px-4 py-4 font-semibold text-gray-900">
-                          {bin.id}
-                        </td>
-                        <td className="px-4 py-4 text-gray-700">{bin.placeName}</td>
-                        <td className="px-4 py-4 text-gray-700">{bin.zoneAssigned}</td>
-                        <td className="px-4 py-4 text-gray-700">{bin.sensorType}</td>
-                        <td className="px-4 py-4 text-gray-700">{bin.batteryLevel}</td>
-                        <td className="px-4 py-4 text-gray-700">{bin.currentFillLevel}%</td>
-                        <td className="px-4 py-4">
-                          <BinStatusPill status={bin.status} />
-                        </td>
-                        <td className="px-4 py-4 text-right text-gray-500">⋮</td>
-                      </tr>
-                    ))}
+                    {filteredBins.map((bin) => {
+                      const status = getOperationalStatus(bin);
+
+                      return (
+                        <tr
+                          key={bin.id}
+                          onClick={() => setSelectedBinId(bin.id)}
+                          className={
+                            "cursor-pointer bg-white transition " +
+                            (selectedBin?.id === bin.id
+                              ? "bg-emerald-50/40"
+                              : "hover:bg-gray-50")
+                          }
+                        >
+                          <td className="px-4 py-4 font-semibold text-gray-900">
+                            {bin.id}
+                          </td>
+                          <td className="px-4 py-4 text-gray-700">
+                            {bin.placeName}
+                          </td>
+                          <td className="px-4 py-4 text-gray-700">{bin.side}</td>
+                          <td className="px-4 py-4 text-gray-700">
+                            Ultrasonic
+                          </td>
+                          <td className="px-4 py-4 text-gray-700">
+                            {dataMode === "real" ? "Solar-powered" : "Simulated"}
+                          </td>
+                          <td className="px-4 py-4 text-gray-700">
+                            {formatPct(bin.currentFillPct)}
+                          </td>
+                          <td className="px-4 py-4 text-gray-700">
+                            {dataMode === "real" ? formatPct(bin.forecastFillPct) : "—"}
+                          </td>
+                          <td className="px-4 py-4">
+                            <BinStatusPill status={status} />
+                          </td>
+                          <td className="px-4 py-4 text-right text-gray-500">⋮</td>
+                        </tr>
+                      );
+                    })}
 
                     {filteredBins.length === 0 && (
                       <tr>
-                        <td colSpan={8} className="px-4 py-6 text-center text-gray-500">
+                        <td
+                          colSpan={9}
+                          className="px-4 py-6 text-center text-gray-500"
+                        >
                           No bins found.
                         </td>
                       </tr>
@@ -184,10 +352,10 @@ export default function AdminBinsPage() {
                     <div className="space-y-2 text-sm">
                       <InfoRow label="Bin ID" value={selectedBin.id} />
                       <InfoRow label="Location" value={selectedBin.placeName} />
-                      <InfoRow label="Type" value={selectedBin.type} />
-                      <InfoRow label="Volume/Capacity" value={selectedBin.volumeCapacity} />
-                      <InfoRow label="Zone" value={selectedBin.zoneAssigned} />
-                      <InfoRow label="Installation Date" value={selectedBin.installationDate} />
+                      <InfoRow label="Building" value={selectedBin.buildingNumber} />
+                      <InfoRow label="Bin Label" value={selectedBin.binNumber} />
+                      <InfoRow label="Zone" value={selectedBin.side} />
+                      <InfoRow label="Data Source" value={dataMode} />
                     </div>
                   </div>
 
@@ -196,11 +364,25 @@ export default function AdminBinsPage() {
                       Sensor Info
                     </div>
                     <div className="space-y-2 text-sm">
-                      <InfoRow label="Sensor Type" value={selectedBin.sensorType} />
-                      <InfoRow label="Last Communication" value={selectedBin.lastCommunication} />
-                      <InfoRow label="Battery Level" value={selectedBin.batteryLevel} />
-                      <InfoRow label="Signal Strength (RSSI)" value={selectedBin.signalStrength} />
-                      <InfoRow label="Firmware Version" value={selectedBin.firmwareVersion} />
+                      <InfoRow label="Sensor Type" value="Ultrasonic" />
+                      <InfoRow
+                        label="Last Communication"
+                        value={selectedBin.currentTimestamp || "—"}
+                      />
+                      <InfoRow
+                        label="Power Source"
+                        value={
+                          dataMode === "real"
+                            ? "Solar-powered sensing frame"
+                            : "Simulated"
+                        }
+                      />
+                      <InfoRow
+                        label="Forecast Available"
+                        value={
+                          selectedBin.forecastFillPct !== undefined ? "Yes" : "No"
+                        }
+                      />
                     </div>
                   </div>
 
@@ -209,13 +391,33 @@ export default function AdminBinsPage() {
                       Operational Status
                     </div>
                     <div className="mt-2 text-5xl font-bold text-gray-900">
-                      {selectedBin.currentFillLevel}%
+                      {formatPct(selectedBin.currentFillPct)}
                     </div>
-                    <div className="mt-2 text-sm text-gray-600">Current Fill Level</div>
+                    <div className="mt-2 text-sm text-gray-600">
+                      Current Fill Level
+                    </div>
 
                     <div className="mt-4 space-y-2 text-sm">
-                      <InfoRow label="Risk Indicator" value={selectedBin.riskIndicator} />
-                      <InfoRow label="Recent Issues" value={selectedBin.recentIssues} />
+                      <InfoRow
+                        label="Forecast Fill"
+                        value={
+                          dataMode === "real"
+                            ? formatPct(selectedBin.forecastFillPct)
+                            : "—"
+                        }
+                      />
+                      <InfoRow
+                        label="Risk Indicator"
+                        value={getRiskIndicator(selectedBin)}
+                      />
+                      <InfoRow
+                        label="Recent Issues"
+                        value={
+                          getOperationalStatus(selectedBin) === "Offline"
+                            ? "No recent communication"
+                            : "None"
+                        }
+                      />
                     </div>
                   </div>
 
@@ -245,7 +447,7 @@ export default function AdminBinsPage() {
   );
 }
 
-function BinStatusPill({ status }: { status: BinRecord["status"] }) {
+function BinStatusPill({ status }: { status: StatusFilter }) {
   const cls =
     status === "Active"
       ? "bg-emerald-50 text-emerald-700"
