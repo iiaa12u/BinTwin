@@ -24,3 +24,119 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* ===============================
+   BinTwin Professional PDF Report
+   =============================== */
+
+@media print {
+  @page {
+    size: A4 landscape;
+    margin: 10mm;
+  }
+
+  html,
+  body {
+    background: #ffffff !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  body.printing-report header,
+  body.printing-report nav,
+  body.printing-report aside,
+  body.printing-report button,
+  body.printing-report select,
+  body.printing-report input,
+  body.printing-report .print-hide {
+    display: none !important;
+  }
+
+  body.printing-report {
+    font-size: 10px !important;
+    color: #111827 !important;
+  }
+
+  body.printing-report .report-print-area {
+    grid-column: 1 / -1 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  body.printing-report main {
+    grid-column: 1 / -1 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  body.printing-report .min-h-\[calc\(100vh-56px\)\] {
+    min-height: auto !important;
+  }
+
+  body.printing-report .mx-auto {
+    max-width: 100% !important;
+  }
+
+  body.printing-report .px-6 {
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  body.printing-report .py-6 {
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+  }
+
+  body.printing-report .space-y-6 > :not([hidden]) ~ :not([hidden]) {
+    margin-top: 10px !important;
+  }
+
+  body.printing-report .rounded-xl,
+  body.printing-report .rounded-lg {
+    border-radius: 8px !important;
+    box-shadow: none !important;
+  }
+
+  body.printing-report .shadow-sm {
+    box-shadow: none !important;
+  }
+
+  body.printing-report .bg-gray-50 {
+    background: #ffffff !important;
+  }
+
+  body.printing-report .bg-white {
+    background: #ffffff !important;
+  }
+
+  body.printing-report h1 {
+    font-size: 20px !important;
+  }
+
+  body.printing-report h2 {
+    font-size: 14px !important;
+  }
+
+  body.printing-report .report-kpis {
+    grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+  }
+
+  body.printing-report .report-panel {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  body.printing-report table {
+    font-size: 9px !important;
+  }
+
+  body.printing-report td,
+  body.printing-report th {
+    padding: 5px 7px !important;
+  }
+
+  body.printing-report .overflow-x-auto {
+    overflow: visible !important;
+  }
+}

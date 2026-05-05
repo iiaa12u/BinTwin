@@ -27,6 +27,51 @@ const EAST_DEPOT: [number, number] = [50.204268, 26.39782];
 const WEST_DEPOT: [number, number] = [50.186365, 26.383639];
 const LANDFILL: [number, number] = [49.86990882883503, 26.160087740331367];
 
+const EMPTY_FEATURE_COLLECTION: GeoJSON.FeatureCollection<any> = {
+  type: "FeatureCollection",
+  features: [],
+};
+
+function buildFallbackRouteGeometry(
+  plannedStops: PlannedStop[]
+): GeoJSON.FeatureCollection<GeoJSON.LineString> | null {
+  if (plannedStops.length === 0) return null;
+
+  const sortedStops = [...plannedStops].sort(
+    (a, b) => Number(a.priority) - Number(b.priority)
+  );
+
+  const firstStop = sortedStops[0];
+
+  const startDepot =
+    firstStop && firstStop.lng < 50.19 ? WEST_DEPOT : EAST_DEPOT;
+
+  const coordinates: [number, number][] = [
+    startDepot,
+    ...sortedStops.map((stop) => [stop.lng, stop.lat] as [number, number]),
+    LANDFILL,
+  ];
+
+  if (coordinates.length < 2) return null;
+
+  return {
+    type: "FeatureCollection",
+    features: [
+      {
+        type: "Feature",
+        properties: {
+          campus: firstStop && firstStop.lng < 50.19 ? "West" : "East",
+          source: "fallback-route",
+        },
+        geometry: {
+          type: "LineString",
+          coordinates,
+        },
+      },
+    ],
+  };
+}
+
 export default function DashboardMap({
   bins,
   onBinSelect,
@@ -39,20 +84,30 @@ export default function DashboardMap({
 
   const mapBins = bins ?? defaultBins;
 
-  const routeGeoJSON = useMemo(() => {
-    if (!showRoute || !routeGeometry) return null;
-    return routeGeometry;
-  }, [routeGeometry, showRoute]);
+  const fallbackRouteGeometry = useMemo(() => {
+    if (!showRoute || plannedStops.length === 0) return null;
+    return buildFallbackRouteGeometry(plannedStops);
+  }, [plannedStops, showRoute]);
 
-  const stopGeoJSON = useMemo(() => {
-    if (!plannedStops.length) return null;
+  const routeGeoJSON = useMemo(() => {
+    if (!showRoute) return null;
+
+    if (routeGeometry && routeGeometry.features?.length > 0) {
+      return routeGeometry;
+    }
+
+    return fallbackRouteGeometry;
+  }, [routeGeometry, fallbackRouteGeometry, showRoute]);
+
+  const stopGeoJSON = useMemo<GeoJSON.FeatureCollection<GeoJSON.Point> | null>(() => {
+    if (!plannedStops.length || !showRoute) return null;
 
     return {
-      type: "FeatureCollection" as const,
+      type: "FeatureCollection",
       features: plannedStops.map((stop) => ({
-        type: "Feature" as const,
+        type: "Feature",
         geometry: {
-          type: "Point" as const,
+          type: "Point",
           coordinates: [stop.lng, stop.lat],
         },
         properties: {
@@ -64,7 +119,7 @@ export default function DashboardMap({
         },
       })),
     };
-  }, [plannedStops]);
+  }, [plannedStops, showRoute]);
 
   const binsGeoJSON = useMemo<GeoJSON.FeatureCollection<GeoJSON.Point>>(
     () => ({
@@ -112,13 +167,77 @@ export default function DashboardMap({
     []
   );
 
+  function updateMapData() {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+
+    const binSource = map.getSource("bins") as mapboxgl.GeoJSONSource | undefined;
+    if (binSource) {
+      binSource.setData(binsGeoJSON);
+    }
+
+    const specialSource = map.getSource("special-points") as
+      | mapboxgl.GeoJSONSource
+      | undefined;
+    if (specialSource) {
+      specialSource.setData(specialGeoJSON);
+    }
+
+    const lineSource = map.getSource("route-line") as
+      | mapboxgl.GeoJSONSource
+      | undefined;
+    if (lineSource) {
+      lineSource.setData(routeGeoJSON ?? EMPTY_FEATURE_COLLECTION);
+    }
+
+    const stopSource = map.getSource("route-stops") as
+      | mapboxgl.GeoJSONSource
+      | undefined;
+    if (stopSource) {
+      stopSource.setData(stopGeoJSON ?? EMPTY_FEATURE_COLLECTION);
+    }
+
+    const bounds = new mapboxgl.LngLatBounds();
+
+    if (mapBins.length > 0) {
+      mapBins.forEach((bin) => bounds.extend([bin.lng, bin.lat]));
+    }
+
+    if (showRoute && plannedStops.length > 0) {
+      plannedStops.forEach((stop) => bounds.extend([stop.lng, stop.lat]));
+    }
+
+    if (showRoute && routeGeoJSON?.features?.length) {
+      routeGeoJSON.features.forEach((feature) => {
+        feature.geometry.coordinates.forEach((coord) => {
+          bounds.extend(coord as [number, number]);
+        });
+      });
+    }
+
+    if (showRoute && plannedStops.length > 0) {
+      bounds.extend(EAST_DEPOT);
+      bounds.extend(WEST_DEPOT);
+      bounds.extend(LANDFILL);
+    }
+
+    if (!bounds.isEmpty()) {
+      map.fitBounds(bounds, {
+        padding: 70,
+        duration: 700,
+        maxZoom: 15,
+      });
+    }
+  }
+
   useEffect(() => {
     if (mapRef.current) return;
+    if (!mapContainer.current) return;
 
     mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || "";
 
     const map = new mapboxgl.Map({
-      container: mapContainer.current as HTMLDivElement,
+      container: mapContainer.current,
       style: "mapbox://styles/mapbox/light-v11",
       center: [50.1905, 26.3898],
       zoom: 14,
@@ -167,48 +286,8 @@ export default function DashboardMap({
               "#9ca3af",
             ],
           ],
-          "circle-opacity": 0.65,
+          "circle-opacity": 0.45,
         },
-      });
-
-      map.on("mouseenter", "bins-circles", () => {
-        map.getCanvas().style.cursor = "pointer";
-      });
-
-      map.on("mouseleave", "bins-circles", () => {
-        map.getCanvas().style.cursor = "";
-      });
-
-      map.on("click", "bins-circles", (e) => {
-        const feature = e.features?.[0];
-        if (!feature) return;
-
-        const coords = (feature.geometry as GeoJSON.Point).coordinates as [
-          number,
-          number
-        ];
-        const props = feature.properties as Record<string, any>;
-
-        if (onBinSelect && props?.id) {
-          onBinSelect(String(props.id));
-        }
-
-        const html = `
-          <div style="font-family: ui-sans-serif; font-size: 12px;">
-            <div style="font-weight: 700; margin-bottom: 6px;">
-              ${props.id} • ${props.side}
-            </div>
-            <div><b>Place:</b> ${props.placeName}</div>
-            <div><b>Building:</b> ${props.buildingNumber}</div>
-            <div><b>Bin:</b> ${props.binNumber}</div>
-            <div><b>Fill:</b> ${props.fillPct}%</div>
-          </div>
-        `;
-
-        new mapboxgl.Popup({ offset: 12 })
-          .setLngLat(coords)
-          .setHTML(html)
-          .addTo(map);
       });
 
       map.addSource("special-points", {
@@ -263,10 +342,7 @@ export default function DashboardMap({
 
       map.addSource("route-line", {
         type: "geojson",
-        data: {
-          type: "FeatureCollection",
-          features: [],
-        },
+        data: routeGeoJSON ?? EMPTY_FEATURE_COLLECTION,
       });
 
       map.addLayer({
@@ -287,17 +363,14 @@ export default function DashboardMap({
             "#ef4444",
             "#111827",
           ],
-          "line-width": 4,
-          "line-opacity": 0.85,
+          "line-width": 5,
+          "line-opacity": 0.9,
         },
       });
 
       map.addSource("route-stops", {
         type: "geojson",
-        data: {
-          type: "FeatureCollection",
-          features: [],
-        },
+        data: stopGeoJSON ?? EMPTY_FEATURE_COLLECTION,
       });
 
       map.addLayer({
@@ -305,7 +378,7 @@ export default function DashboardMap({
         type: "circle",
         source: "route-stops",
         paint: {
-          "circle-radius": 14,
+          "circle-radius": 15,
           "circle-stroke-width": 3,
           "circle-stroke-color": "#ffffff",
           "circle-color": [
@@ -335,6 +408,47 @@ export default function DashboardMap({
         },
       });
 
+      map.on("mouseenter", "bins-circles", () => {
+        map.getCanvas().style.cursor = "pointer";
+      });
+
+      map.on("mouseleave", "bins-circles", () => {
+        map.getCanvas().style.cursor = "";
+      });
+
+      map.on("click", "bins-circles", (e) => {
+        const feature = e.features?.[0];
+        if (!feature) return;
+
+        const coords = (feature.geometry as GeoJSON.Point).coordinates as [
+          number,
+          number
+        ];
+
+        const props = feature.properties as Record<string, any>;
+
+        if (onBinSelect && props?.id) {
+          onBinSelect(String(props.id));
+        }
+
+        const html = `
+          <div style="font-family: ui-sans-serif; font-size: 12px;">
+            <div style="font-weight: 700; margin-bottom: 6px;">
+              ${props.id} • ${props.side}
+            </div>
+            <div><b>Place:</b> ${props.placeName}</div>
+            <div><b>Building:</b> ${props.buildingNumber}</div>
+            <div><b>Bin:</b> ${props.binNumber}</div>
+            <div><b>Fill:</b> ${props.fillPct}%</div>
+          </div>
+        `;
+
+        new mapboxgl.Popup({ offset: 12 })
+          .setLngLat(coords)
+          .setHTML(html)
+          .addTo(map);
+      });
+
       map.on("mouseenter", "route-stops-layer", () => {
         map.getCanvas().style.cursor = "pointer";
       });
@@ -351,6 +465,7 @@ export default function DashboardMap({
           number,
           number
         ];
+
         const props = feature.properties as Record<string, any>;
 
         const html = `
@@ -370,95 +485,35 @@ export default function DashboardMap({
           .setHTML(html)
           .addTo(map);
       });
+
+      updateMapData();
     });
 
     return () => {
       map.remove();
       mapRef.current = null;
     };
-  }, [binsGeoJSON, onBinSelect, specialGeoJSON]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !map.isStyleLoaded()) return;
+    if (!map) return;
 
-    const binSource = map.getSource("bins") as
-      | mapboxgl.GeoJSONSource
-      | undefined;
-
-    if (binSource) {
-      binSource.setData(binsGeoJSON);
+    if (map.isStyleLoaded()) {
+      updateMapData();
+    } else {
+      map.once("load", updateMapData);
     }
-
-    const specialSource = map.getSource("special-points") as
-      | mapboxgl.GeoJSONSource
-      | undefined;
-
-    if (specialSource) {
-      specialSource.setData(specialGeoJSON);
-    }
-
-    const lineSource = map.getSource("route-line") as
-      | mapboxgl.GeoJSONSource
-      | undefined;
-
-    if (lineSource) {
-      lineSource.setData(
-        routeGeoJSON ?? {
-          type: "FeatureCollection",
-          features: [],
-        }
-      );
-    }
-
-    const stopSource = map.getSource("route-stops") as
-      | mapboxgl.GeoJSONSource
-      | undefined;
-
-    if (stopSource) {
-      stopSource.setData(
-        stopGeoJSON ?? {
-          type: "FeatureCollection",
-          features: [],
-        }
-      );
-    }
-
-    const bounds = new mapboxgl.LngLatBounds();
-
-    if (mapBins.length > 0) {
-      mapBins.forEach((bin) => bounds.extend([bin.lng, bin.lat]));
-    }
-
-    if (plannedStops.length > 0 || routeGeoJSON) {
-      bounds.extend(EAST_DEPOT);
-      bounds.extend(WEST_DEPOT);
-      bounds.extend(LANDFILL);
-
-      plannedStops.forEach((stop) => bounds.extend([stop.lng, stop.lat]));
-
-      if (routeGeoJSON) {
-        routeGeoJSON.features.forEach((feature) => {
-          feature.geometry.coordinates.forEach((coord) => {
-            bounds.extend(coord as [number, number]);
-          });
-        });
-      }
-    }
-
-    if (!bounds.isEmpty()) {
-      map.fitBounds(bounds, {
-        padding: 60,
-        duration: 700,
-      });
-    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     binsGeoJSON,
-    mapBins,
+    specialGeoJSON,
     routeGeoJSON,
     stopGeoJSON,
     plannedStops,
-    specialGeoJSON,
+    mapBins,
+    showRoute,
   ]);
 
   return (

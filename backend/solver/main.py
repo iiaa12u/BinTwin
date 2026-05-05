@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +35,9 @@ class SolveRouteRequest(BaseModel):
     manualBinId: Optional[str] = None
     forecastHorizon: Optional[str] = None
 
+    # This supports your friend's new Synthetic Data / Real Data update.
+    bins: Optional[List[Dict[str, Any]]] = None
+
 
 @app.get("/")
 def root():
@@ -54,7 +57,6 @@ def solve_route_endpoint(payload: SolveRouteRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# optional alias, in case you test another path later
 @app.post("/optimize-route")
 def optimize_route_endpoint(payload: SolveRouteRequest):
     try:
